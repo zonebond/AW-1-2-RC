@@ -1,0 +1,22 @@
+{
+  "name": "aw-1-2-rc",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A grid tactics game inspired by Advance Wars, built from scratch for macOS.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21"
+  },
+  "dependencies": {
+    "@types/three": "^0.185.4",
+    "three": "^0.185.1"
+  }
+}
