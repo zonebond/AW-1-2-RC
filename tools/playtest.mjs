@@ -104,6 +104,7 @@ const clickTile = async (x, y) => {
 };
 
 const menuButton = (label) => page.locator(".menu button", { hasText: label }).first();
+const buildButton = (label) => page.locator(".build-item", { hasText: label }).first();
 
 const clickMenu = async (label) => {
   const button = menuButton(label);
@@ -372,7 +373,13 @@ if (site === null) {
   await shot("10-build-menu");
 
   const fundsBefore = s.funds[0];
-  await clickMenu("步兵");
+  const detailVisible = await page.locator(".detail-banner").isVisible();
+  check("生产菜单显示单位详情", detailVisible);
+  const targetChips = await page.locator(".weapon-targets .target").count();
+  check("详情列出可打击目标", targetChips > 0, `chips=${targetChips}`);
+
+  await buildButton("步兵").click();
+  await settle();
   s = await state();
   check("生产扣款 1000", s.funds[0] === fundsBefore - 1000, `${fundsBefore} -> ${s.funds[0]}`);
   check(

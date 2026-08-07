@@ -22,9 +22,9 @@ import {
 import { nextAiStep } from "../ai/ai";
 import { attackableTiles } from "../core/pathfinding";
 import { pathTo } from "../core/pathfinding";
-import { BUILD_ORDER, UNITS, isIndirect } from "../core/units";
+import { isIndirect } from "../core/units";
 import type { MapEntry } from "../core/maps";
-import { key, type PlayerId, type Point, type UnitId } from "../core/types";
+import { key, type PlayerId, type Point } from "../core/types";
 import { CameraRig } from "../render/scene";
 import { TEAMS } from "../render/palette";
 import { World } from "../render/world";
@@ -233,8 +233,8 @@ export class Controller {
       }
 
       case "building":
+        this.hud.hideBuild();
         this.mode = { kind: "idle" };
-        this.hud.hideMenu();
         this.selectAt(tile);
         return;
     }
@@ -242,6 +242,7 @@ export class Controller {
 
   private selectAt(tile: Point): void {
     this.hud.hideMenu();
+    this.hud.hideBuild();
     this.hud.hideForecast();
 
     const unit = unitAt(this.state, tile.x, tile.y);
@@ -282,6 +283,7 @@ export class Controller {
     }
 
     this.mode = { kind: "selected", unitId: unit.id, landing };
+    this.world.overlay.setSelected({ x: unit.x, y: unit.y });
     this.world.overlay.setMovement(
       landing,
       [...threatened].map((k) => ({ x: k % 1000, y: Math.floor(k / 1000) })),
@@ -302,6 +304,7 @@ export class Controller {
     this.world.overlay.setCursor(null);
     await this.world.animateMove(unit.id, path);
 
+    this.world.overlay.setSelected(at);
     this.openActionMenu(unit, at, origin, path);
   }
 
@@ -359,23 +362,18 @@ export class Controller {
   }
 
   private openBuildMenu(tile: Point): void {
-    const funds = this.state.players[0].funds;
-    const items: MenuItem[] = BUILD_ORDER.map((type: UnitId) => ({
-      label: UNITS[type].name,
-      cost: UNITS[type].cost,
-      disabled: UNITS[type].cost > funds,
-      onSelect: () => {
+    this.mode = { kind: "building", at: tile };
+    this.hud.showBuild(
+      this.state.players[0].funds,
+      (type) => {
         buildUnit(this.state, tile.x, tile.y, type);
-        this.hud.hideMenu();
+        this.hud.hideBuild();
         this.mode = { kind: "idle" };
         this.world.sync(this.state);
         this.hud.refresh(this.state);
       },
-    }));
-    items.push({ label: "取消", onSelect: () => void this.cancel() });
-
-    this.mode = { kind: "building", at: tile };
-    this.hud.showMenu(items, this.world.project(tile), `工厂 · 资金 $${funds.toLocaleString()}`);
+      () => void this.cancel(),
+    );
   }
 
   /* ---------------------------------------------------------------- *
@@ -498,6 +496,7 @@ export class Controller {
   /** Back out of whatever is open, walking a previewed move back if needed. */
   private async cancel(): Promise<void> {
     this.hud.hideMenu();
+    this.hud.hideBuild();
     this.hud.hideForecast();
 
     switch (this.mode.kind) {

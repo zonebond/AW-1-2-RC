@@ -10,6 +10,27 @@ import type { PlayerId, UnitId } from "../core/types";
  * these are meant to look like moulded toys on a board, not scale models.
  */
 
+/** Sub-assembly kept out of the bake so it can still be articulated. */
+const TURRET = "turret";
+
+/** How a unit fidgets when it has nothing to do. */
+export type IdleStyle = "foot" | "tracked" | "wheeled";
+
+export const IDLE_STYLE: Record<UnitId, IdleStyle> = {
+  infantry: "foot",
+  mech: "foot",
+  recon: "wheeled",
+  apc: "tracked",
+  artillery: "tracked",
+  tank: "tracked",
+  antiair: "tracked",
+  rockets: "wheeled",
+  mdtank: "tracked",
+};
+
+/** Name of the pivot node that idle animation rotates, when a unit has one. */
+export const TURRET_PIVOT = "turretPivot";
+
 const SKIN = 0xe8b48c;
 const DARK_METAL = 0x5c636d;
 
@@ -189,6 +210,7 @@ function buildArtillery(colors: TeamColors): THREE.Group {
 
   // The gun is the whole point of this unit, so it is long and raised.
   const gun = new THREE.Group();
+  gun.name = TURRET;
   gun.add(barrel(0.62, 0.036, colors));
   gun.position.set(0, 0.35, -0.02);
   // Positive X rotation lifts a -Z barrel. Negative buries it in the ground.
@@ -213,6 +235,7 @@ function buildTank(colors: TeamColors): THREE.Group {
   group.add(glacis);
 
   const turret = new THREE.Group();
+  turret.name = TURRET;
   turret.add(part(roundedBox(0.34, 0.15, 0.4, 0.055), plastic(colors.primary), 0, 0.08, 0));
   turret.add(part(roundedBox(0.14, 0.06, 0.16, 0.025), plastic(colors.dark), 0, 0.17, 0.08));
   turret.add(part(sphere(0.05, 10), plastic(colors.accent), 0.1, 0.17, 0.02));
@@ -234,6 +257,7 @@ function buildAntiAir(colors: TeamColors): THREE.Group {
   group.add(part(roundedBox(0.4, 0.15, 0.58, 0.045), plastic(colors.primary), 0, 0.18, 0));
 
   const turret = new THREE.Group();
+  turret.name = TURRET;
   turret.add(part(roundedBox(0.3, 0.18, 0.3, 0.05), plastic(colors.dark), 0, 0.09, 0));
   turret.add(part(roundedBox(0.24, 0.06, 0.24, 0.02), plastic(colors.light), 0, 0.19, 0));
 
@@ -291,6 +315,7 @@ function buildRockets(colors: TeamColors): THREE.Group {
   // Launcher pack, elevated over the bed. The tubes deliberately overhang the
   // front of the box so the silhouette reads as "rockets" and not "cargo".
   const launcher = new THREE.Group();
+  launcher.name = TURRET;
   launcher.add(part(roundedBox(0.34, 0.22, 0.28, 0.035), plastic(colors.dark), 0, 0, 0));
   for (const side of [-1, 1]) {
     for (const row of [-1, 1]) {
@@ -338,6 +363,7 @@ function buildMdTank(colors: TeamColors): THREE.Group {
   }
 
   const turret = new THREE.Group();
+  turret.name = TURRET;
   turret.add(part(roundedBox(0.42, 0.18, 0.46, 0.06), plastic(colors.primary), 0, 0.09, 0));
   turret.add(part(roundedBox(0.44, 0.06, 0.2, 0.025), plastic(colors.dark), 0, 0.19, 0.1));
   turret.add(part(roundedBox(0.16, 0.07, 0.18, 0.03), plastic(colors.dark), -0.08, 0.21, 0.06));
@@ -378,8 +404,6 @@ export const UNIT_SCALE = 1.08;
  * share the merged geometry and the material, so putting twenty tanks on the
  * board costs twenty draw calls rather than four hundred.
  */
-const templates = new Map<string, THREE.Group>();
-
 /**
  * Yaw that makes a model's nose point along (dx, dz) in world space.
  *
@@ -408,11 +432,40 @@ export const MUZZLE: Record<UnitId, { height: number; forward: number }> = {
   mdtank: { height: 0.4, forward: 0.89 },
 };
 
+const templates = new Map<string, THREE.Group>();
+
+/**
+ * Bake a model, but keep its turret as a separate object on its own pivot so
+ * idle animation can still swing it. Everything else is merged flat, which is
+ * what keeps a board full of units down to a sane number of draw calls.
+ */
+function bakeUnit(source: THREE.Group): THREE.Group {
+  const assembled = new THREE.Group();
+
+  const turret = source.getObjectByName(TURRET);
+  if (turret !== undefined) {
+    const pivotAt = turret.position.clone();
+    // Bake the turret about its own origin, then hang it off a pivot placed
+    // where it sat, so rotating it spins the turret rather than orbiting it.
+    turret.position.set(0, 0, 0);
+    turret.removeFromParent();
+
+    const pivot = new THREE.Group();
+    pivot.name = TURRET_PIVOT;
+    pivot.position.copy(pivotAt);
+    pivot.add(bake(turret));
+    assembled.add(pivot);
+  }
+
+  assembled.add(bake(source));
+  return assembled;
+}
+
 export function buildUnitModel(type: UnitId, owner: PlayerId): THREE.Group {
   const id = `${type}:${owner}`;
   let template = templates.get(id);
   if (template === undefined) {
-    template = bake(BUILDERS[type](TEAMS[owner]));
+    template = bakeUnit(BUILDERS[type](TEAMS[owner]));
     templates.set(id, template);
   }
 

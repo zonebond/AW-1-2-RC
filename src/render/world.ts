@@ -1,7 +1,15 @@
 import * as THREE from "three";
 import { buildBoard, worldX, worldZ } from "./board";
 import { buildTerrainTile, type TileContext } from "./terrainModels";
-import { MUZZLE, UNIT_SCALE, buildUnitModel, yawTowards } from "./unitModels";
+import {
+  IDLE_STYLE,
+  MUZZLE,
+  TURRET_PIVOT,
+  UNIT_SCALE,
+  buildUnitModel,
+  yawTowards,
+  type IdleStyle,
+} from "./unitModels";
 import { Effects, type ShakeSink } from "./effects";
 import { TEAMS } from "./palette";
 import type { PlayerId, UnitId } from "../core/types";
@@ -36,10 +44,20 @@ import type { Stage } from "./scene";
 
 interface UnitView {
   id: number;
+  /** Carries tile position and facing; animations move this. */
   model: THREE.Group;
+  /** Child of the model. Idle motion lives here so it never fights a move. */
+  body: THREE.Group;
+  /** Articulated turret, for the units that have one. */
+  turret: THREE.Object3D | null;
   hp: THREE.Sprite | null;
   facing: number;
   done: boolean;
+  idle: IdleStyle;
+  /** Per-unit offset so a row of tanks does not breathe in lockstep. */
+  phase: number;
+  /** Vertical squash from taking a hit, folded into the idle transform. */
+  squash: number;
 }
 
 /** Linear tween helper; every animation here is short enough not to need more. */
@@ -60,6 +78,7 @@ export class World {
   private readonly effects: Effects;
 
   private readonly ticking: Array<(dt: number) => boolean> = [];
+  private clock = 0;
 
   /**
    * Animation speed multiplier. Durations below are authored for normal play;
@@ -146,7 +165,14 @@ export class World {
   }
 
   private createView(unit: Unit): UnitView {
-    const model = buildUnitModel(unit.type, unit.owner);
+    const body = buildUnitModel(unit.type, unit.owner);
+
+    // Two levels: the outer node is driven by movement and facing, the inner
+    // one by the idle loop. Keeping them apart means a unit can breathe while
+    // it walks without the two transforms overwriting each other.
+    const model = new THREE.Group();
+    model.add(body);
+
     // Both armies start facing the middle of the board: player 0 deploys along
     // the south edge and looks north, player 1 does the reverse.
     const facing = unit.owner === 0 ? yawTowards(0, -1) : yawTowards(0, 1);
@@ -160,7 +186,18 @@ export class World {
       if (mesh.isMesh) mesh.userData.baseMaterial = mesh.material;
     });
 
-    return { id: unit.id, model, hp: null, facing, done: false };
+    return {
+      id: unit.id,
+      model,
+      body,
+      turret: body.getObjectByName(TURRET_PIVOT) ?? null,
+      hp: null,
+      facing,
+      done: false,
+      idle: IDLE_STYLE[unit.type],
+      phase: (unit.id * 2.399963) % (Math.PI * 2),
+      squash: 0,
+    };
   }
 
   private setDone(view: UnitView, done: boolean): void {
@@ -373,15 +410,10 @@ export class World {
       this.effects.explosion(impact, 1);
       const hit = this.views.get(spec.targetId);
       if (hit !== undefined) {
-        // A short squash sells the impact without needing a hit material.
-        const model = hit.model;
+        // A short squash sells the impact without needing a hit material. The
+        // idle loop applies it, so the two never fight over the scale.
         void this.run(0.2, (t) => {
-          const k = Math.sin(t * Math.PI);
-          model.scale.set(
-            UNIT_SCALE * (1 + k * 0.12),
-            UNIT_SCALE * (1 - k * 0.16),
-            UNIT_SCALE * (1 + k * 0.12),
-          );
+          hit.squash = Math.sin(t * Math.PI);
         });
       }
     }
@@ -428,10 +460,65 @@ export class World {
     this.effects.setShakeSink(sink);
   }
 
+  /**
+   * Idle motion. Nothing on the board is ever perfectly still: infantry
+   * breathe and shift their weight, tracked hulls tremble with the engine and
+   * rock gently, wheeled units bounce on their suspension, and any unit with a
+   * turret slowly sweeps it across the field.
+   *
+   * The amplitudes are deliberately tiny — large enough to notice out of the
+   * corner of your eye, small enough that a unit still reads as sitting
+   * squarely on its tile.
+   */
+  private applyIdle(view: UnitView): void {
+    const t = this.clock + view.phase;
+    const body = view.body;
+
+    let lift = 0;
+    let roll = 0;
+    let sway = 0;
+    let breathe = 0;
+
+    switch (view.idle) {
+      case "foot":
+        lift = Math.sin(t * 2.1) * 0.014;
+        breathe = Math.sin(t * 2.1) * 0.035;
+        sway = Math.sin(t * 0.83) * 0.05;
+        break;
+      case "tracked":
+        // A fast tremble for the engine, plus a slow rock on the suspension.
+        lift = Math.sin(t * 8.7) * 0.006 + Math.sin(t * 1.3) * 0.008;
+        roll = Math.sin(t * 7.1) * 0.008 + Math.sin(t * 1.1) * 0.016;
+        sway = Math.sin(t * 0.61) * 0.022;
+        break;
+      case "wheeled":
+        lift = Math.sin(t * 3.3) * 0.012;
+        roll = Math.sin(t * 2.2) * 0.026;
+        sway = Math.sin(t * 0.74) * 0.03;
+        break;
+    }
+
+    const squash = view.squash;
+    body.position.y = lift;
+    body.rotation.z = roll;
+    body.rotation.y = sway;
+    body.scale.set(
+      UNIT_SCALE * (1 + squash * 0.12),
+      UNIT_SCALE * (1 + breathe * 0.4 - squash * 0.16),
+      UNIT_SCALE * (1 + squash * 0.12),
+    );
+
+    if (view.turret !== null) {
+      view.turret.rotation.y = Math.sin(t * 0.42) * 0.16;
+    }
+  }
+
   update(dt: number): void {
+    this.clock += dt;
     for (let i = this.ticking.length - 1; i >= 0; i--) {
       if (!this.ticking[i](dt)) this.ticking.splice(i, 1);
     }
+    for (const view of this.views.values()) this.applyIdle(view);
     this.effects.update(dt);
     this.overlay.update(dt);
   }

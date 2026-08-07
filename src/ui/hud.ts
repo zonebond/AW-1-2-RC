@@ -2,7 +2,16 @@ import { displayHp } from "../core/damage";
 import { propertiesOf, type Forecast, type GameState, type Unit } from "../core/game";
 import { tileAt, type Tile } from "../core/map";
 import { CAPTURE_POINTS, TERRAIN } from "../core/terrain";
-import { UNITS, isIndirect } from "../core/units";
+import {
+  BUILD_ORDER,
+  FOOT_UNITS,
+  PROFILES,
+  UNITS,
+  VEHICLE_UNITS,
+  isIndirect,
+} from "../core/units";
+import { canTarget } from "../core/damage";
+import { unitIcon } from "../render/unitIcon";
 import { NEUTRAL, type Owner, type Point, type UnitId } from "../core/types";
 import { TEAMS } from "../render/palette";
 
@@ -50,6 +59,7 @@ export class Hud {
   private readonly terrainPanel = element("div", "panel info-terrain");
   private readonly unitPanel = element("div", "panel info-unit");
   private readonly menu = element("div", "panel menu hidden");
+  private readonly build = element("div", "build hidden");
   private readonly forecastPanel = element("div", "panel forecast hidden");
   private readonly banner = element("div", "banner");
   private readonly endTurnButton = element("button", "end-turn", "结束回合");
@@ -82,6 +92,7 @@ export class Hud {
       this.terrainPanel,
       this.unitPanel,
       this.menu,
+      this.build,
       this.forecastPanel,
       this.banner,
       this.endTurnButton,
@@ -227,6 +238,167 @@ export class Hud {
 
   hideMenu(): void {
     this.menu.classList.add("hidden");
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Production
+   * ---------------------------------------------------------------- */
+
+  /**
+   * The factory screen: a priced roster on the left, full stats for whichever
+   * entry is highlighted on the right. The icons are the actual unit models,
+   * rendered offscreen, so the menu can never show something the battlefield
+   * does not.
+   */
+  showBuild(funds: number, onPick: (type: UnitId) => void, onCancel: () => void): void {
+    const list = element("div", "build-list");
+    const detail = element("div", "build-detail");
+
+    const header = element("div", "build-header");
+    header.append(
+      element("span", "build-title", "工厂"),
+      element("span", "build-funds", `$${funds.toLocaleString()}`),
+    );
+
+    let current: UnitId | null = null;
+    const showDetail = (type: UnitId): void => {
+      if (current === type) return;
+      current = type;
+      detail.replaceChildren(...this.buildDetail(type));
+      for (const node of list.querySelectorAll(".build-item")) {
+        node.classList.toggle("current", (node as HTMLElement).dataset.unit === type);
+      }
+    };
+
+    for (const type of BUILD_ORDER) {
+      const def = UNITS[type];
+      const affordable = def.cost <= funds;
+
+      const item = element("button", "build-item");
+      item.dataset.unit = type;
+      item.disabled = !affordable;
+
+      const icon = element("img", "build-icon");
+      icon.src = unitIcon(type, 0);
+      icon.alt = def.name;
+
+      item.append(
+        icon,
+        element("span", "build-name", def.name),
+        element("span", "build-cost", `$${def.cost.toLocaleString()}`),
+      );
+      // Hovering previews, clicking commits — the same split the series uses.
+      item.addEventListener("mouseenter", () => showDetail(type));
+      item.addEventListener("focus", () => showDetail(type));
+      item.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (affordable) onPick(type);
+      });
+      list.append(item);
+    }
+
+    const cancel = element("button", "build-cancel", "取消");
+    cancel.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onCancel();
+    });
+
+    const columns = element("div", "build-columns");
+    columns.append(list, detail);
+    this.build.replaceChildren(header, columns, cancel);
+    this.build.classList.remove("hidden");
+    showDetail(BUILD_ORDER[0]);
+  }
+
+  hideBuild(): void {
+    this.build.classList.add("hidden");
+  }
+
+  private buildDetail(type: UnitId): HTMLElement[] {
+    const def = UNITS[type];
+    const profile = PROFILES[type];
+    const nodes: HTMLElement[] = [];
+
+    const banner = element("div", "detail-banner", def.name);
+    nodes.push(banner);
+
+    const top = element("div", "detail-top");
+    const stats = element("div", "detail-stats");
+    stats.append(
+      this.detailStat("移动", `${def.move}`),
+      this.detailStat("视野", `${def.vision}`),
+      this.detailStat("燃料", `${def.maxFuel} / ${def.maxFuel}`),
+      this.detailStat("造价", `$${def.cost.toLocaleString()}`),
+    );
+    const portrait = element("img", "detail-portrait");
+    portrait.src = unitIcon(type, 0);
+    portrait.alt = def.name;
+    top.append(stats, portrait);
+    nodes.push(top);
+
+    nodes.push(element("p", "detail-blurb", profile.blurb));
+
+    nodes.push(
+      this.weaponBlock(
+        "主武器",
+        profile.primary,
+        def.maxAmmo > 0 ? `${def.maxAmmo} / ${def.maxAmmo}` : "无限",
+        def,
+        type,
+      ),
+    );
+    nodes.push(this.weaponBlock("副武器", profile.secondary, "无限", def, type));
+    return nodes;
+  }
+
+  private detailStat(label: string, value: string): HTMLElement {
+    const row = element("div", "detail-stat");
+    row.append(element("span", undefined, label), element("b", undefined, value));
+    return row;
+  }
+
+  private weaponBlock(
+    title: string,
+    name: string | undefined,
+    ammo: string,
+    def: (typeof UNITS)[UnitId],
+    type: UnitId,
+  ): HTMLElement {
+    const block = element("div", "detail-weapon");
+
+    const head = element("div", "weapon-head");
+    head.append(element("span", "weapon-label", title));
+    if (name === undefined) {
+      head.append(element("span", "weapon-none", "无"));
+      block.append(head);
+      return block;
+    }
+
+    head.append(element("span", "weapon-name", name));
+    head.append(element("span", "weapon-ammo", ammo));
+    if (def.rangeMax > 0) {
+      head.append(
+        element(
+          "span",
+          "weapon-range",
+          def.rangeMin === def.rangeMax ? `射程 ${def.rangeMax}` : `射程 ${def.rangeMin}~${def.rangeMax}`,
+        ),
+      );
+    }
+    block.append(head);
+
+    // What this weapon can actually hurt, read straight off the damage chart.
+    const targets = element("div", "weapon-targets");
+    for (const [label, group] of [
+      ["步兵", FOOT_UNITS],
+      ["车辆", VEHICLE_UNITS],
+    ] as const) {
+      const hits = group.some((other) => canTarget(type, other));
+      const chip = element("span", `target ${hits ? "on" : "off"}`, label);
+      targets.append(chip);
+    }
+    block.append(targets);
+    return block;
   }
 
   showForecast(
