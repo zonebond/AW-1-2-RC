@@ -153,6 +153,10 @@ body {
   pointer-events: auto;
   padding: 6px;
   min-width: 128px;
+  /* The production menu is nine units plus a cancel; on a short window it has
+     to scroll rather than run off the bottom of the screen. */
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 
 .menu button {

@@ -101,7 +101,10 @@ export class World {
         this.views.set(unit.id, view);
       }
       view.model.position.set(this.wx(unit.x), 0, this.wz(unit.y));
-      this.setDone(view, unit.done);
+      // Greying out means "this one has had its go", which is only meaningful
+      // for the side currently to move. The opponent's units keep their done
+      // flag from their own turn, and showing them greyed reads as disabled.
+      this.setDone(view, unit.done && unit.owner === state.turn);
       this.refreshHp(view, unit);
     }
 
@@ -242,6 +245,19 @@ export class World {
     const view = this.views.get(unitId);
     if (view === undefined || path.length < 2) return;
 
+    // Each leg costs at least one frame, so at high speed the walk is skipped
+    // outright rather than spending a frame per tile going nowhere visible.
+    if (this.speed >= 8) {
+      const from = path[path.length - 2];
+      const end = path[path.length - 1];
+      this.turnTo(
+        view,
+        Math.atan2(this.wx(end.x) - this.wx(from.x), this.wz(end.y) - this.wz(from.y)),
+      );
+      view.model.position.set(this.wx(end.x), 0, this.wz(end.y));
+      return;
+    }
+
     for (let i = 1; i < path.length; i++) {
       const from = path[i - 1];
       const to = path[i];
@@ -309,6 +325,19 @@ export class World {
   /** Brief pause so consecutive AI orders stay readable. */
   wait(seconds: number): Promise<void> {
     return this.run(seconds, () => {});
+  }
+
+  /**
+   * Remove everything this World added. Clearing the whole scene would also
+   * take the lights with it, which are owned by the Stage and set up once.
+   */
+  dispose(): void {
+    this.ticking.length = 0;
+    this.stage.scene.remove(this.root);
+    this.views.clear();
+    this.tileMeshes.clear();
+    this.tileOwners.clear();
+    this.captureBadges.clear();
   }
 
   update(dt: number): void {

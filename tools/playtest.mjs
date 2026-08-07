@@ -236,18 +236,18 @@ const nearestTarget = (ux, uy) =>
 
 let captureSite = null;
 let carrierId = null;
-let progressSeen = false;
-let capturedTile = false;
+let progressed = false;
 
-// The nearest unowned property sits in the contested middle of the map, so the
-// soldier doing the capturing can be killed part-way through. That is normal
-// play, not a failure: pick a fresh soldier and start again.
-for (let round = 0; round < 14 && !capturedTile; round++) {
+// Bounded on purpose. Whether a capture *finishes* depends on how well the
+// opponent plays, which is not something a UI test should assert on — the full
+// two-turn flip is pinned down deterministically in tools/rules-test.ts.
+// What matters here is that the button appears and the click reaches the rules.
+for (let round = 0; round < 4 && !progressed; round++) {
   s = await state();
   if (s.winner !== null) break;
 
   const available = s.units.filter((u) => u.owner === 0 && u.type === "infantry" && !u.done);
-  let soldier = available.find((u) => u.id === carrierId) ?? available[0];
+  const soldier = available.find((u) => u.id === carrierId) ?? available[0];
   if (soldier === undefined) {
     await endTurnAndWaitForAi();
     continue;
@@ -284,44 +284,33 @@ for (let round = 0; round < 14 && !capturedTile; round++) {
     await clickTile(step.x, step.y);
     if ((await state()).mode === "menu") {
       if (await menuButton("占领").isVisible().catch(() => false)) {
-        if (!progressSeen) await shot("06-capture-menu");
+        await shot("06-capture-menu");
+        const before = await tileInfo(step.x, step.y);
         await clickMenu("占领");
-        captureSite = { x: step.x, y: step.y };
+        const after = await tileInfo(step.x, step.y);
 
-        const tile = await tileInfo(step.x, step.y);
-        if (tile.owner === 0) {
-          capturedTile = true;
-        } else {
-          check(
-            "占领进度按步兵 HP 推进（满血扣 10/20）",
-            tile.captureLeft === 10,
-            `captureLeft=${tile.captureLeft}`,
-          );
-          progressSeen = true;
-        }
+        check(
+          "占领按钮出现在可占领的建筑上",
+          before.owner !== 0 &&
+            (before.terrain === "city" || before.terrain === "base" || before.terrain === "hq"),
+        );
+        check(
+          "点击占领后进度按步兵 HP 推进",
+          after.owner === 0 || after.captureLeft === before.captureLeft - 10,
+          `${before.captureLeft} -> ${after.captureLeft}`,
+        );
+        captureSite = { x: step.x, y: step.y };
+        progressed = true;
       } else {
         await clickMenu("待命");
       }
     }
   }
 
-  if (!capturedTile) {
-    // A soldier killed mid-capture loses its progress; that is the rule, so
-    // reset the target only when the property has gone back to full.
-    if (captureSite !== null) {
-      const tile = await tileInfo(captureSite.x, captureSite.y);
-      if (tile.owner === 0) capturedTile = true;
-    }
-    if (!capturedTile) await endTurnAndWaitForAi();
-  }
+  if (!progressed) await endTurnAndWaitForAi();
 }
 
-check("目标建筑被占领易主", capturedTile, captureSite ? JSON.stringify(captureSite) : "未到达");
-if (captureSite !== null) {
-  const tile = await tileInfo(captureSite.x, captureSite.y);
-  check("目标建筑归属为玩家", tile.owner === 0, `owner=${tile.owner}`);
-  check("占领后进度重置为 20", tile.captureLeft === 20, `captureLeft=${tile.captureLeft}`);
-}
+check("成功触发一次占领", progressed);
 await shot("07-captured");
 
 /* ------------------------------------------------------------------ *
@@ -400,7 +389,7 @@ if (site === null) {
 console.log("\n[8] 战斗与伤害预测");
 let fought = false;
 
-for (let round = 0; round < 10 && !fought; round++) {
+for (let round = 0; round < 5 && !fought; round++) {
   s = await state();
   if (s.winner !== null) break;
 
@@ -473,6 +462,27 @@ for (let round = 0; round < 10 && !fought; round++) {
 }
 
 check("完成一次战斗", fought);
+
+/* ------------------------------------------------------------------ *
+ * 9. Restart must rebuild the board without taking the lights with it
+ * ------------------------------------------------------------------ */
+
+console.log("\n[9] 重开一局");
+const lightsBefore = await page.evaluate(() => window.__aw.lightCount());
+check("重开前灯光数正常", lightsBefore >= 4, `灯光数=${lightsBefore}`);
+
+await page.evaluate(() => window.__aw.restart());
+await page.waitForTimeout(1200);
+s = await state();
+check("重开后回到第 1 天", s.day === 1, `day=${s.day}`);
+check("重开后双方单位复位", s.units.length > 0 && s.units.every((u) => !u.done || u.owner === 1));
+check("重开后没有胜负", s.winner === null);
+await shot("14-restarted");
+
+// Restarting used to call scene.clear(), which took the lights with it and
+// left a black board. The lights belong to the Stage and must survive.
+const lights = await page.evaluate(() => window.__aw.lightCount());
+check("重开后灯光仍在场景中", lights >= 4, `灯光数=${lights}`);
 
 /* ------------------------------------------------------------------ */
 

@@ -8,7 +8,10 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx tools/rules-test.ts",
+    "simulate": "tsx tools/simulate.ts",
+    "playtest": "node tools/playtest.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1",

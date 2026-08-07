@@ -406,7 +406,10 @@ export function unloadTiles(state: GameState, carrier: Unit): Point[] {
     const tile = tileAt(state.map, x, y);
     if (tile === null) continue;
     if (TERRAIN[tile.terrain].cost[def.moveClass] === null) continue;
-    if (unitAt(state, x, y) !== undefined) continue;
+    // The carrier itself is about to vacate its old tile, so it is not an
+    // obstacle to its own passengers.
+    const occupant = unitAt(state, x, y);
+    if (occupant !== undefined && occupant.id !== carrier.id) continue;
     out.push({ x, y });
   }
   return out;

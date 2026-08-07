@@ -24,7 +24,7 @@ import { attackableTiles } from "../core/pathfinding";
 import { pathTo } from "../core/pathfinding";
 import { BUILD_ORDER, UNITS, isIndirect } from "../core/units";
 import type { MapEntry } from "../core/maps";
-import { key, type Point, type UnitId } from "../core/types";
+import { key, type PlayerId, type Point, type UnitId } from "../core/types";
 import { CameraRig } from "../render/scene";
 import { TEAMS } from "../render/palette";
 import { World } from "../render/world";
@@ -37,6 +37,10 @@ import type { Stage } from "../render/scene";
  * *previews* the move — the unit's real position does not change until an
  * action is confirmed, so cancelling can walk it straight back.
  */
+
+function teamHex(player: PlayerId): string {
+  return `#${TEAMS[player].light.toString(16).padStart(6, "0")}`;
+}
 
 type Mode =
   | { kind: "idle" }
@@ -80,7 +84,7 @@ export class Controller {
 
   private restart(): void {
     this.hud.clearResult();
-    this.stage.scene.clear();
+    this.world.dispose();
     this.state = createGame(this.entry.build(), this.entry.startUnits);
     this.world = new World(this.stage, this.state.map);
     this.world.speed = this.animationSpeed;
@@ -507,7 +511,7 @@ export class Controller {
     this.world.sync(this.state);
     this.hud.refresh(this.state);
 
-    await this.hud.flashBanner("蓝月军 回合", `#${TEAMS[1].light.toString(16)}`);
+    await this.hud.flashBanner("蓝月军 回合", teamHex(1));
     await this.runAiTurn();
   }
 
@@ -580,7 +584,7 @@ export class Controller {
     endTurn(this.state);
     this.world.sync(this.state);
     this.hud.refresh(this.state);
-    await this.hud.flashBanner("红星军 回合", `#${TEAMS[0].light.toString(16)}`);
+    await this.hud.flashBanner("红星军 回合", teamHex(0));
 
     this.mode = this.state.winner === null ? { kind: "idle" } : { kind: "over" };
     if (this.state.winner !== null) this.hud.showResult(this.state);
@@ -606,6 +610,8 @@ export class Controller {
     landing: (unitId: number) => Point[];
     aiProbe: () => void;
     stats: () => { calls: number; triangles: number; programs: number };
+    restart: () => void;
+    lightCount: () => number;
   } {
     return {
       state: () => this.state,
@@ -623,6 +629,10 @@ export class Controller {
         return out;
       },
       aiProbe: () => void nextAiStep(this.state),
+      restart: () => this.restart(),
+      lightCount: () =>
+        this.stage.scene.children.filter((child) => (child as { isLight?: boolean }).isLight)
+          .length,
       stats: () => ({
         calls: this.stage.renderer.info.render.calls,
         triangles: this.stage.renderer.info.render.triangles,
