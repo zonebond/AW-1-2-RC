@@ -67,9 +67,10 @@ function baseplate(map: GameMap): THREE.Group {
   const w = map.width * TILE;
   const h = map.height * TILE;
 
+  // Light wood, the way a boxed battlefield sits in its tray.
   const plate = new THREE.Mesh(
     roundedBox(w + 0.7, 0.34, h + 0.7, 0.12),
-    plastic(0xb9b2a4, { roughness: 0.8 }),
+    plastic(0xdcb883, { roughness: 0.72 }),
   );
   plate.position.y = -SLAB_H - 0.17 + 0.02;
   plate.receiveShadow = true;
@@ -77,7 +78,7 @@ function baseplate(map: GameMap): THREE.Group {
 
   const trim = new THREE.Mesh(
     roundedBox(w + 1.05, 0.16, h + 1.05, 0.06),
-    plastic(0x8e8779, { roughness: 0.85 }),
+    plastic(0xa87c46, { roughness: 0.8 }),
   );
   trim.position.y = -SLAB_H - 0.36;
   trim.receiveShadow = true;

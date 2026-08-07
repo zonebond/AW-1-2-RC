@@ -6,16 +6,26 @@ import type { PlayerId } from "../core/types";
  * plastic under a single warm key light rather than as flat vector art.
  */
 export const PALETTE = {
-  grassTop: 0x8cc760,
-  grassSide: 0x6da344,
-  grassAlt: 0x7fbc55,
+  // Grass is pushed well towards yellow-green and high saturation; a muted
+  // pastel field reads as a diagram, not a toy battlefield.
+  grassTop: 0x8ed246,
+  grassAlt: 0x83c73d,
+  grassSide: 0x5d9a2e,
+  /** Darker line between tiles, so the grid is countable at a glance. */
+  grout: 0x6cab33,
 
-  roadTop: 0xc9c2b4,
-  roadSide: 0xa79f90,
-  roadMark: 0xf0ece0,
+  roadTop: 0xa8a49b,
+  roadSide: 0x86837b,
+  roadMark: 0xf7f4ec,
 
-  riverTop: 0x59b0dd,
-  riverDeep: 0x2f7fae,
+  riverTop: 0x4ec8f0,
+  riverDeep: 0x2596c8,
+  /** Exposed earth where land drops away to water. */
+  bank: 0xc9803c,
+  bankDark: 0x9c5a22,
+
+  shrub: 0xe8a42c,
+  shrubDark: 0xc47f18,
 
   rock: 0xa1968a,
   rockDark: 0x7d7266,

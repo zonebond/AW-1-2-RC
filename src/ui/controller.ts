@@ -80,7 +80,23 @@ export class Controller {
 
     this.world.sync(this.state);
     this.hud.refresh(this.state);
+    this.openingView();
     this.bindInput();
+  }
+
+  /**
+   * Start close in, looking at your own army, the way the series does. Fitting
+   * the whole board on screen makes every tile too small to read and gives the
+   * opening turn no sense of place.
+   */
+  private openingView(): void {
+    this.rig.zoomBy(0.72);
+
+    const own = this.state.units.filter((u) => u.owner === 0);
+    if (own.length === 0) return;
+    const cx = own.reduce((sum, u) => sum + u.x, 0) / own.length;
+    const cy = own.reduce((sum, u) => sum + u.y, 0) / own.length;
+    this.rig.focus(cx - (this.state.map.width - 1) / 2, cy - (this.state.map.height - 1) / 2);
   }
 
   private restart(): void {
@@ -92,7 +108,7 @@ export class Controller {
     this.world.setShakeSink(this.rig);
     this.world.sync(this.state);
     this.hud.refresh(this.state);
-    this.rig.apply();
+    this.openingView();
     this.mode = { kind: "idle" };
   }
 
@@ -645,6 +661,7 @@ export class Controller {
     stats: () => { calls: number; triangles: number; programs: number };
     restart: () => void;
     lightCount: () => number;
+    focusTile: (x: number, y: number) => void;
   } {
     return {
       state: () => this.state,
@@ -663,6 +680,11 @@ export class Controller {
       },
       aiProbe: () => void nextAiStep(this.state),
       restart: () => this.restart(),
+      focusTile: (x, y) =>
+        this.rig.focus(
+          x - (this.state.map.width - 1) / 2,
+          y - (this.state.map.height - 1) / 2,
+        ),
       lightCount: () =>
         this.stage.scene.children.filter((child) => (child as { isLight?: boolean }).isLight)
           .length,

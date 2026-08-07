@@ -245,7 +245,9 @@ export class Overlay {
 
   constructor(private readonly map: GameMap) {
     this.movePool = new QuadPool(this.group, 0.96, 0x2f8ff0, 0.55, this.stripes);
-    this.attackPool = new QuadPool(this.group, 0.96, 0xff4b4b, 0.4);
+    // Against the brighter grass, a weak red wash turns muddy brown and reads
+    // as terrain rather than as a warning, so it is pushed harder here.
+    this.attackPool = new QuadPool(this.group, 0.96, 0xff2b2b, 0.56);
     this.targetPool = new QuadPool(this.group, 0.96, 0xff2d2d, 0.66);
 
     // Double sided on purpose: the ribbon is built as flat triangles in the

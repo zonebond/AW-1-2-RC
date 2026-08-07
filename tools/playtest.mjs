@@ -96,6 +96,9 @@ const settle = async () => {
 };
 
 const clickTile = async (x, y) => {
+  // The game opens zoomed in, so a tile can be off screen. Pan to it first —
+  // the same thing a player would do before clicking.
+  await page.evaluate(([tx, ty]) => window.__aw.focusTile(tx, ty), [x, y]);
   const point = await page.evaluate(([tx, ty]) => window.__aw.project(tx, ty), [x, y]);
   await page.mouse.move(point.x, point.y);
   await page.waitForTimeout(40);

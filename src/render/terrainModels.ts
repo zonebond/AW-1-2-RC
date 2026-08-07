@@ -29,12 +29,22 @@ function isRoadLike(terrain: TerrainId | null): boolean {
   return terrain === "road" || terrain === "city" || terrain === "base" || terrain === "hq";
 }
 
-/** The grass/dirt slab every land tile stands on. */
-function groundSlab(top: number, side: number): THREE.Mesh {
-  const mesh = part(roundedBox(TILE, SLAB_H, TILE, 0.045), plastic(top), 0, -SLAB_H / 2, 0);
-  // A darker skirt hides the seam between neighbouring slabs and reads as soil.
-  const skirt = part(roundedBox(TILE * 0.995, SLAB_H * 0.55, TILE * 0.995, 0.03), plastic(side));
-  skirt.position.y = -SLAB_H * 0.72;
+/**
+ * The slab every land tile stands on.
+ *
+ * The top face is inset and sits on a slightly larger, darker block, so the
+ * gap between neighbouring tiles reads as a drawn grid line. Being able to
+ * count tiles at a glance matters more here than a seamless field.
+ */
+function groundSlab(top: number, side: number, grout = PALETTE.grout): THREE.Mesh {
+  const mesh = part(roundedBox(TILE * 0.968, SLAB_H, TILE * 0.968, 0.04), plastic(top), 0, -SLAB_H / 2, 0);
+
+  const base = part(roundedBox(TILE, SLAB_H * 0.92, TILE, 0.03), plastic(grout));
+  base.position.y = -SLAB_H * 0.06;
+  mesh.add(base);
+
+  const skirt = part(roundedBox(TILE * 0.995, SLAB_H * 0.5, TILE * 0.995, 0.03), plastic(side));
+  skirt.position.y = -SLAB_H * 0.74;
   mesh.add(skirt);
   return mesh;
 }
@@ -60,12 +70,35 @@ function buildPlain(ctx: TileContext): THREE.Group {
   const group = new THREE.Group();
   group.add(grassSlab(ctx));
 
-  // A couple of grass tufts break up the flatness without adding clutter.
+  // Roughly a third of plains carry a warm shrub clump; the rest get a couple
+  // of small green tufts. The mix is what stops a wide field reading as a
+  // single flat colour.
+  if (tileRandom(ctx.x, ctx.y, 2) > 0.66) {
+    const cx = (tileRandom(ctx.x, ctx.y, 21) - 0.5) * 0.34;
+    const cz = (tileRandom(ctx.x, ctx.y, 22) - 0.5) * 0.34;
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2 + tileRandom(ctx.x, ctx.y, 23) * 3;
+      const reach = 0.09 + tileRandom(ctx.x, ctx.y, 24 + i) * 0.07;
+      const blade = part(
+        new THREE.ConeGeometry(0.05, 0.12, 5),
+        plastic(i % 2 === 0 ? PALETTE.shrub : PALETTE.shrubDark, { flatShading: true }),
+        cx + Math.cos(angle) * reach,
+        0.05,
+        cz + Math.sin(angle) * reach,
+      );
+      blade.rotation.z = Math.cos(angle) * 0.5;
+      blade.rotation.x = -Math.sin(angle) * 0.5;
+      blade.castShadow = false;
+      group.add(blade);
+    }
+    return group;
+  }
+
   const count = tileRandom(ctx.x, ctx.y, 3) > 0.55 ? 2 : 1;
   for (let i = 0; i < count; i++) {
-    const rx = (tileRandom(ctx.x, ctx.y, 20 + i) - 0.5) * 0.62;
-    const rz = (tileRandom(ctx.x, ctx.y, 40 + i) - 0.5) * 0.62;
-    const tuft = part(sphere(0.055, 8), plastic(PALETTE.foliageDark, { flatShading: true }));
+    const rx = (tileRandom(ctx.x, ctx.y, 20 + i) - 0.5) * 0.58;
+    const rz = (tileRandom(ctx.x, ctx.y, 40 + i) - 0.5) * 0.58;
+    const tuft = part(sphere(0.05, 8), plastic(PALETTE.foliageDark, { flatShading: true }));
     tuft.scale.set(1, 0.5, 1);
     tuft.position.set(rx, 0.02, rz);
     tuft.castShadow = false;
@@ -81,7 +114,7 @@ function buildRoad(ctx: TileContext): THREE.Group {
 
   if (overWater) {
     // Bridges sit on water, so the slab underneath is river, not soil.
-    group.add(buildRiverBed());
+    group.add(buildRiverBed(ctx));
   } else {
     group.add(grassSlab(ctx));
   }
@@ -143,13 +176,23 @@ function buildRoad(ctx: TileContext): THREE.Group {
   return group;
 }
 
-function buildRiverBed(): THREE.Group {
+/** True where a tile is water rather than something you can stand on. */
+function isWater(terrain: TerrainId | null): boolean {
+  return terrain === "river";
+}
+
+/**
+ * Water sits below the land, and every edge where it meets solid ground shows
+ * a lip of exposed orange earth. That bank is what stops a river reading as a
+ * blue rug laid over the grass.
+ */
+function buildRiverBed(ctx?: TileContext): THREE.Group {
   const group = new THREE.Group();
   const bed = part(
     roundedBox(TILE, SLAB_H, TILE, 0.045),
     plastic(PALETTE.riverDeep, { roughness: 0.5 }),
     0,
-    -SLAB_H / 2 - 0.06,
+    -SLAB_H / 2 - 0.1,
     0,
   );
   bed.castShadow = false;
@@ -158,22 +201,39 @@ function buildRiverBed(): THREE.Group {
   const surface = part(
     roundedBox(TILE * 0.999, 0.1, TILE * 0.999, 0.02),
     plastic(PALETTE.riverTop, {
-      roughness: 0.12,
-      metalness: 0.05,
+      roughness: 0.1,
+      metalness: 0.06,
       transparent: true,
-      opacity: 0.82,
+      opacity: 0.86,
     }),
     0,
-    -0.09,
+    -0.13,
     0,
   );
   surface.castShadow = false;
   group.add(surface);
+
+  if (ctx !== undefined) {
+    const edges: Array<[TerrainId | null, number, number, number, number]> = [
+      [ctx.north, 0, -0.485, TILE, 0.07],
+      [ctx.south, 0, 0.485, TILE, 0.07],
+      [ctx.west, -0.485, 0, 0.07, TILE],
+      [ctx.east, 0.485, 0, 0.07, TILE],
+    ];
+    for (const [neighbour, dx, dz, w, d] of edges) {
+      // Off-map counts as land, so the river is walled in at the board edge.
+      if (isWater(neighbour)) continue;
+      group.add(part(roundedBox(w, 0.26, d, 0.025), plastic(PALETTE.bank), dx, -0.19, dz));
+      group.add(
+        part(roundedBox(w * 0.96, 0.05, d * 0.96, 0.018), plastic(PALETTE.bankDark), dx, -0.055, dz),
+      );
+    }
+  }
   return group;
 }
 
 function buildRiver(ctx: TileContext): THREE.Group {
-  const group = buildRiverBed();
+  const group = buildRiverBed(ctx);
   // Foam flecks give the water some life without an animated shader.
   for (let i = 0; i < 2; i++) {
     const roll = tileRandom(ctx.x, ctx.y, 60 + i);
@@ -182,7 +242,7 @@ function buildRiver(ctx: TileContext): THREE.Group {
       roundedBox(0.22, 0.02, 0.07, 0.01),
       plastic(0xdff2fb, { roughness: 0.3, transparent: true, opacity: 0.7 }),
       (tileRandom(ctx.x, ctx.y, 70 + i) - 0.5) * 0.5,
-      -0.03,
+      -0.07,
       (tileRandom(ctx.x, ctx.y, 80 + i) - 0.5) * 0.5,
     );
     fleck.castShadow = false;
@@ -195,28 +255,31 @@ function buildWood(ctx: TileContext): THREE.Group {
   const group = new THREE.Group();
   group.add(grassSlab(ctx));
 
-  const count = 3 + Math.floor(tileRandom(ctx.x, ctx.y, 5) * 2);
+  // A stand of many small conifers, not a handful of big ones. The reference
+  // packs six to nine per tile, and that density is most of what makes a
+  // forest read as a forest from the play camera.
+  const count = 6 + Math.floor(tileRandom(ctx.x, ctx.y, 5) * 4);
   for (let i = 0; i < count; i++) {
-    const rx = (tileRandom(ctx.x, ctx.y, 100 + i) - 0.5) * 0.58;
-    const rz = (tileRandom(ctx.x, ctx.y, 130 + i) - 0.5) * 0.58;
-    const scale = 0.82 + tileRandom(ctx.x, ctx.y, 160 + i) * 0.42;
+    const rx = (tileRandom(ctx.x, ctx.y, 100 + i) - 0.5) * 0.74;
+    const rz = (tileRandom(ctx.x, ctx.y, 130 + i) - 0.5) * 0.74;
+    const scale = 0.7 + tileRandom(ctx.x, ctx.y, 160 + i) * 0.5;
 
     const tree = new THREE.Group();
-    tree.add(part(cylinder(0.032, 0.042, 0.16, 7), plastic(PALETTE.trunk), 0, 0.08, 0));
+    tree.add(part(cylinder(0.02, 0.026, 0.09, 6), plastic(PALETTE.trunk), 0, 0.045, 0));
 
     // Two stacked cones read as a conifer far more cheaply than a real canopy.
     const lower = part(
-      new THREE.ConeGeometry(0.19, 0.26, 7),
+      new THREE.ConeGeometry(0.115, 0.17, 6),
       plastic(PALETTE.foliageDark, { flatShading: true }),
       0,
-      0.26,
+      0.15,
       0,
     );
     const upper = part(
-      new THREE.ConeGeometry(0.14, 0.22, 7),
+      new THREE.ConeGeometry(0.085, 0.15, 6),
       plastic(PALETTE.foliage, { flatShading: true }),
       0,
-      0.42,
+      0.26,
       0,
     );
     tree.add(lower, upper);
