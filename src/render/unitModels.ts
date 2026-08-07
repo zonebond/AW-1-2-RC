@@ -117,19 +117,20 @@ function soldier(colors: TeamColors, bulky: boolean): THREE.Group {
 }
 
 /**
- * Foot units are scaled well above true proportion. At a real 1:1 next to a
- * tank a soldier is an unreadable speck, and these two are the units you spend
- * the whole game looking at.
+ * Foot units are scaled far above true proportion, on purpose. A soldier drawn
+ * at 1:1 against a tank is a speck you cannot find on a zoomed-out board, and
+ * infantry are the units you spend the whole game looking at. The series does
+ * the same thing: every unit, on foot or not, fills most of its tile.
  */
 function buildInfantry(colors: TeamColors): THREE.Group {
   const group = soldier(colors, false);
-  group.scale.setScalar(1.3);
+  group.scale.setScalar(1.75);
   return group;
 }
 
 function buildMech(colors: TeamColors): THREE.Group {
   const group = soldier(colors, true);
-  group.scale.setScalar(1.4);
+  group.scale.setScalar(1.85);
   return group;
 }
 
@@ -364,8 +365,12 @@ const BUILDERS: Record<UnitId, (colors: TeamColors) => THREE.Group> = {
   mdtank: buildMdTank,
 };
 
-/** Slightly under a tile wide, so neighbouring units never visually merge. */
-const UNIT_SCALE = 0.9;
+/**
+ * Units fill roughly three quarters of a tile: large enough to read at the
+ * zoom where the whole board is visible, small enough that two units in
+ * neighbouring tiles never visually merge into one shape.
+ */
+const UNIT_SCALE = 1.08;
 
 /**
  * One baked template per unit type and livery. Instances are clones, which
