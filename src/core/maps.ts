@@ -1,4 +1,5 @@
 import { parseMap, type GameMap } from "./map";
+import type { StartUnit } from "./game";
 
 /**
  * Both maps are 180-degree rotationally symmetric, so neither side gets a
@@ -50,6 +51,8 @@ export interface MapEntry {
   label: string;
   blurb: string;
   build: () => GameMap;
+  /** Opening forces, mirrored between the two sides like the terrain is. */
+  startUnits: readonly StartUnit[];
 }
 
 export const MAPS: readonly MapEntry[] = [
@@ -58,12 +61,32 @@ export const MAPS: readonly MapEntry[] = [
     label: "双桥防线",
     blurb: "20x15 · 河流分割 · 两座桥 + 中央开阔地",
     build: () => parseMap("双桥防线", TWIN_BRIDGES),
+    startUnits: [
+      { type: "infantry", owner: 1, x: 8, y: 2 },
+      { type: "infantry", owner: 1, x: 12, y: 2 },
+      { type: "recon", owner: 1, x: 6, y: 2 },
+      { type: "tank", owner: 1, x: 10, y: 1 },
+
+      { type: "infantry", owner: 0, x: 11, y: 12 },
+      { type: "infantry", owner: 0, x: 7, y: 12 },
+      { type: "recon", owner: 0, x: 13, y: 12 },
+      { type: "tank", owner: 0, x: 9, y: 13 },
+    ],
   },
   {
     id: "crossroads",
     label: "十字路口",
     blurb: "14x10 · 无河流 · 短平快的正面交锋",
     build: () => parseMap("十字路口", CROSSROADS),
+    startUnits: [
+      { type: "infantry", owner: 1, x: 5, y: 1 },
+      { type: "infantry", owner: 1, x: 7, y: 1 },
+      { type: "tank", owner: 1, x: 6, y: 1 },
+
+      { type: "infantry", owner: 0, x: 8, y: 8 },
+      { type: "infantry", owner: 0, x: 6, y: 8 },
+      { type: "tank", owner: 0, x: 7, y: 8 },
+    ],
   },
 ];
 
