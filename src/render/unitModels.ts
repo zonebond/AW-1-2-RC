@@ -191,7 +191,8 @@ function buildArtillery(colors: TeamColors): THREE.Group {
   const gun = new THREE.Group();
   gun.add(barrel(0.62, 0.036, colors));
   gun.position.set(0, 0.35, -0.02);
-  gun.rotation.x = -0.34;
+  // Positive X rotation lifts a -Z barrel. Negative buries it in the ground.
+  gun.rotation.x = 0.34;
   group.add(gun);
   group.add(part(roundedBox(0.14, 0.12, 0.16, 0.04), plastic(colors.light), 0, 0.35, 0.04));
   // Recoil spades dug in at the back.
@@ -248,7 +249,7 @@ function buildAntiAir(colors: TeamColors): THREE.Group {
     brake.rotation.x = Math.PI / 2;
     gun.add(brake);
     gun.position.set(side * 0.062, 0.15, -0.07);
-    gun.rotation.x = -0.42;
+    gun.rotation.x = 0.42;
     turret.add(gun);
   }
 
@@ -315,7 +316,7 @@ function buildRockets(colors: TeamColors): THREE.Group {
   }
   launcher.add(part(roundedBox(0.38, 0.05, 0.05, 0.02), plastic(colors.primary), 0, -0.13, 0.1));
   launcher.position.set(0, 0.34, 0.16);
-  launcher.rotation.x = -0.42;
+  launcher.rotation.x = 0.42;
   group.add(launcher);
   // Stabiliser legs.
   for (const side of [-1, 1]) {
@@ -370,7 +371,7 @@ const BUILDERS: Record<UnitId, (colors: TeamColors) => THREE.Group> = {
  * zoom where the whole board is visible, small enough that two units in
  * neighbouring tiles never visually merge into one shape.
  */
-const UNIT_SCALE = 1.08;
+export const UNIT_SCALE = 1.08;
 
 /**
  * One baked template per unit type and livery. Instances are clones, which
@@ -378,6 +379,34 @@ const UNIT_SCALE = 1.08;
  * board costs twenty draw calls rather than four hundred.
  */
 const templates = new Map<string, THREE.Group>();
+
+/**
+ * Yaw that makes a model's nose point along (dx, dz) in world space.
+ *
+ * Models are authored facing local -Z. A rotation of theta about Y sends that
+ * to (-sin, -cos), so aiming at a direction needs the negated arguments —
+ * atan2(dx, dz) points every unit exactly backwards.
+ */
+export function yawTowards(dx: number, dz: number): number {
+  return Math.atan2(-dx, -dz);
+}
+
+/**
+ * Barrel tip in model space, for muzzle flashes and tracer origins. These are
+ * read off the model definitions above — a flash at the wrong distance reads
+ * as the gun firing out of its own turret.
+ */
+export const MUZZLE: Record<UnitId, { height: number; forward: number }> = {
+  infantry: { height: 0.41, forward: 0.3 },
+  mech: { height: 0.56, forward: 0.35 },
+  recon: { height: 0.33, forward: 0.18 },
+  apc: { height: 0.3, forward: 0.3 },
+  artillery: { height: 0.56, forward: 0.6 },
+  tank: { height: 0.34, forward: 0.66 },
+  antiair: { height: 0.57, forward: 0.45 },
+  rockets: { height: 0.5, forward: 0.22 },
+  mdtank: { height: 0.4, forward: 0.89 },
+};
 
 export function buildUnitModel(type: UnitId, owner: PlayerId): THREE.Group {
   const id = `${type}:${owner}`;

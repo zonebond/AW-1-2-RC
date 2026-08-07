@@ -71,6 +71,7 @@ export class Controller {
     this.world = new World(stage, this.state.map);
     this.world.speed = animationSpeed;
     this.rig = new CameraRig(stage, this.state.map.width, this.state.map.height);
+    this.world.setShakeSink(this.rig);
     this.hud = new Hud(
       host,
       () => void this.endHumanTurn(),
@@ -88,6 +89,7 @@ export class Controller {
     this.state = createGame(this.entry.build(), this.entry.startUnits);
     this.world = new World(this.stage, this.state.map);
     this.world.speed = this.animationSpeed;
+    this.world.setShakeSink(this.rig);
     this.world.sync(this.state);
     this.hud.refresh(this.state);
     this.rig.apply();
@@ -430,15 +432,52 @@ export class Controller {
     const target = unitById(this.state, targetId);
     if (unit === undefined || target === undefined) return this.afterAction();
 
-    const at: Point = { x: target.x, y: target.y };
-    const attackerAt: Point = { x: unit.x, y: unit.y };
-    const result = attack(this.state, unit, target);
-
-    await this.world.animateAttack(unitId, at, Math.min(result.damage, 100));
-    if (result.counter > 0) {
-      await this.world.animateAttack(targetId, attackerAt, Math.min(result.counter, 100));
-    }
+    await this.playExchange(unit, target);
     this.afterAction();
+  }
+
+  /**
+   * Resolve an attack and stage both halves of it: the shot, then the
+   * counterattack if the defender survives to answer. Everything the animation
+   * needs is captured before the rules run, because a destroyed unit is gone
+   * from the state by the time we come to draw it.
+   */
+  private async playExchange(attacker: Unit, defender: Unit): Promise<void> {
+    const attackerId = attacker.id;
+    const defenderId = defender.id;
+    const attackerType = attacker.type;
+    const defenderType = defender.type;
+    const attackerOwner = attacker.owner;
+    const defenderOwner = defender.owner;
+    const defenderTile: Point = { x: defender.x, y: defender.y };
+    const attackerTile: Point = { x: attacker.x, y: attacker.y };
+
+    const result = attack(this.state, attacker, defender);
+
+    await this.world.animateAttack({
+      attackerId,
+      attackerType,
+      targetId: defenderId,
+      targetTile: defenderTile,
+      targetOwner: defenderOwner,
+      damage: Math.min(result.damage, 100),
+      destroyed: result.defenderDestroyed,
+      indirect: isIndirect(attackerType),
+    });
+
+    if (result.counter > 0 || result.attackerDestroyed) {
+      await this.world.animateAttack({
+        attackerId: defenderId,
+        attackerType: defenderType,
+        targetId: attackerId,
+        targetTile: attackerTile,
+        targetOwner: attackerOwner,
+        damage: Math.min(result.counter, 100),
+        destroyed: result.attackerDestroyed,
+        // Counterattacks are only ever made by adjacent direct-fire units.
+        indirect: false,
+      });
+    }
   }
 
   private afterAction(): void {
@@ -551,13 +590,7 @@ export class Controller {
             finishAction(this.state, unit);
             break;
           }
-          const at: Point = { x: target.x, y: target.y };
-          const attackerAt: Point = { x: unit.x, y: unit.y };
-          const result = attack(this.state, unit, target);
-          await this.world.animateAttack(unit.id, at, Math.min(result.damage, 100));
-          if (result.counter > 0) {
-            await this.world.animateAttack(target.id, attackerAt, Math.min(result.counter, 100));
-          }
+          await this.playExchange(unit, target);
           break;
         }
         case "capture":
@@ -592,6 +625,7 @@ export class Controller {
 
   update(dt: number): void {
     this.world.update(dt);
+    this.rig.updateShake(dt);
   }
 
   /** Exposed so the bootstrap can rebuild the layout on resize. */

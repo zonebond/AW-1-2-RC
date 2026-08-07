@@ -3,9 +3,12 @@ import "./style.css";
 import { MAPS, mapById } from "./core/maps";
 import { BUILD_ORDER, UNITS } from "./core/units";
 import { buildBoard, worldX, worldZ } from "./render/board";
-import { buildUnitModel } from "./render/unitModels";
+import { buildUnitModel, yawTowards } from "./render/unitModels";
 import { createStage, frameBoard } from "./render/scene";
 import { Controller } from "./ui/controller";
+import { createGame } from "./core/game";
+import { CameraRig } from "./render/scene";
+import { World, type AttackAnimation } from "./render/world";
 import type { PlayerId, UnitId } from "./core/types";
 
 const app = document.getElementById("app")!;
@@ -33,6 +36,9 @@ switch (view) {
     break;
   case "board":
     showStaticBoard(params.get("map") ?? MAPS[0].id);
+    break;
+  case "fx":
+    showEffectsLab();
     break;
   default:
     controller = new Controller(
@@ -99,7 +105,7 @@ function showStaticBoard(mapId: string): void {
   for (const [type, owner, x, y] of placements) {
     const model = buildUnitModel(type, owner);
     model.position.set(worldX(map, x), 0, worldZ(map, y));
-    model.rotation.y = owner === 0 ? Math.PI : 0;
+    model.rotation.y = owner === 0 ? yawTowards(0, -1) : yawTowards(0, 1);
     stage.scene.add(model);
   }
 
@@ -153,4 +159,98 @@ function showUnitParade(): void {
   frameBoard(stage, cols * cellX + 0.4, rows * cellZ + 0.4, 0.88);
 
   console.info(BUILD_ORDER.map((id) => `${UNITS[id].name}(${id})`).join(" · "));
+}
+
+/**
+ * Effects lab. Combat effects last a few hundred milliseconds, which is
+ * impossible to catch by screenshotting a live game — especially in a headless
+ * browser rendering at about one frame a second. This view drives the clock by
+ * hand instead, so any instant of an explosion can be captured exactly.
+ *
+ *   window.__fx.fire("direct" | "indirect" | "kill")
+ *   window.__fx.advance(seconds)
+ */
+function showEffectsLab(): void {
+  const map = mapById("crossroads").build();
+  const state = createGame(
+    map,
+    [
+      // All four on open plain, clear of buildings that would hide the blast.
+      { type: "tank", owner: 0, x: 4, y: 6 },
+      { type: "tank", owner: 1, x: 4, y: 4 },
+      { type: "artillery", owner: 0, x: 7, y: 6 },
+      { type: "infantry", owner: 1, x: 7, y: 3 },
+    ],
+    { random: () => 0.5 },
+  );
+
+  const world = new World(stage, map);
+  const rig = new CameraRig(stage, map.width, map.height);
+  world.setShakeSink(rig);
+  world.sync(state);
+  rig.zoomBy(0.55);
+  rig.focus(-1.2, -0.6);
+
+  const byType = (type: UnitId, owner: PlayerId) =>
+    state.units.find((u) => u.type === type && u.owner === owner)!;
+
+  const shots: Record<string, () => AttackAnimation> = {
+    direct: () => {
+      const a = byType("tank", 0);
+      const d = byType("tank", 1);
+      return {
+        attackerId: a.id,
+        attackerType: a.type,
+        targetId: d.id,
+        targetTile: { x: d.x, y: d.y },
+        targetOwner: d.owner,
+        damage: 55,
+        destroyed: false,
+        indirect: false,
+      };
+    },
+    indirect: () => {
+      const a = byType("artillery", 0);
+      const d = byType("infantry", 1);
+      return {
+        attackerId: a.id,
+        attackerType: a.type,
+        targetId: d.id,
+        targetTile: { x: d.x, y: d.y },
+        targetOwner: d.owner,
+        damage: 70,
+        destroyed: false,
+        indirect: true,
+      };
+    },
+    kill: () => {
+      const a = byType("tank", 0);
+      const d = byType("tank", 1);
+      return {
+        attackerId: a.id,
+        attackerType: a.type,
+        targetId: d.id,
+        targetTile: { x: d.x, y: d.y },
+        targetOwner: d.owner,
+        damage: 90,
+        destroyed: true,
+        indirect: false,
+      };
+    },
+  };
+
+  (window as unknown as { __fx: unknown }).__fx = {
+    fire: (kind: string) => void world.animateAttack(shots[kind]()),
+    advance: (seconds: number) => {
+      world.update(seconds);
+      rig.updateShake(seconds);
+      stage.render();
+    },
+    reset: () => {
+      world.dispose();
+      location.reload();
+    },
+  };
+
+  stage.render();
 }

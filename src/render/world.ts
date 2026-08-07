@@ -1,7 +1,10 @@
 import * as THREE from "three";
 import { buildBoard, worldX, worldZ } from "./board";
 import { buildTerrainTile, type TileContext } from "./terrainModels";
-import { buildUnitModel } from "./unitModels";
+import { MUZZLE, UNIT_SCALE, buildUnitModel, yawTowards } from "./unitModels";
+import { Effects, type ShakeSink } from "./effects";
+import { TEAMS } from "./palette";
+import type { PlayerId, UnitId } from "../core/types";
 import { captureBadge, damagePopup, hpBadge } from "./labels";
 import { dimmed } from "./materials";
 import { Overlay } from "./overlay";
@@ -10,6 +13,20 @@ import { tileAt, type GameMap } from "../core/map";
 import { CAPTURE_POINTS, TERRAIN } from "../core/terrain";
 import type { GameState, Unit } from "../core/game";
 import type { Owner, Point, TerrainId } from "../core/types";
+
+/** Everything the renderer needs to stage one exchange of fire. */
+export interface AttackAnimation {
+  attackerId: number;
+  attackerType: UnitId;
+  /** The unit being shot at; its model is removed at the moment of impact. */
+  targetId: number;
+  targetTile: Point;
+  targetOwner: PlayerId;
+  damage: number;
+  destroyed: boolean;
+  /** Indirect fire lobs a shell on an arc instead of firing a flat tracer. */
+  indirect: boolean;
+}
 import type { Stage } from "./scene";
 
 /**
@@ -40,6 +57,7 @@ export class World {
   private readonly tileMeshes = new Map<number, THREE.Group>();
   private readonly tileOwners = new Map<number, Owner>();
   private readonly captureBadges = new Map<number, THREE.Sprite>();
+  private readonly effects: Effects;
 
   private readonly ticking: Array<(dt: number) => boolean> = [];
 
@@ -48,7 +66,16 @@ export class World {
    * the automated playtest cranks this up so a match runs at logic speed
    * instead of at the mercy of the frame rate.
    */
-  speed = 1;
+  private animationSpeed = 1;
+
+  get speed(): number {
+    return this.animationSpeed;
+  }
+
+  set speed(value: number) {
+    this.animationSpeed = value;
+    this.effects.speed = value;
+  }
 
   constructor(
     private readonly stage: Stage,
@@ -68,6 +95,7 @@ export class World {
       this.tileOwners.set(this.tileKey(x, y), tileAt(map, x, y)!.owner);
     }
 
+    this.effects = new Effects(this.effectLayer);
     this.overlay = new Overlay(map);
     this.root.add(this.overlay.group);
     stage.scene.add(this.root);
@@ -119,8 +147,9 @@ export class World {
 
   private createView(unit: Unit): UnitView {
     const model = buildUnitModel(unit.type, unit.owner);
-    // Both armies face the middle of the board at the start of the game.
-    const facing = unit.owner === 0 ? Math.PI : 0;
+    // Both armies start facing the middle of the board: player 0 deploys along
+    // the south edge and looks north, player 1 does the reverse.
+    const facing = unit.owner === 0 ? yawTowards(0, -1) : yawTowards(0, 1);
     model.rotation.y = facing;
     model.position.set(this.wx(unit.x), 0, this.wz(unit.y));
     this.unitLayer.add(model);
@@ -250,10 +279,7 @@ export class World {
     if (this.speed >= 8) {
       const from = path[path.length - 2];
       const end = path[path.length - 1];
-      this.turnTo(
-        view,
-        Math.atan2(this.wx(end.x) - this.wx(from.x), this.wz(end.y) - this.wz(from.y)),
-      );
+      this.turnTo(view, yawTowards(end.x - from.x, end.y - from.y));
       view.model.position.set(this.wx(end.x), 0, this.wz(end.y));
       return;
     }
@@ -261,8 +287,7 @@ export class World {
     for (let i = 1; i < path.length; i++) {
       const from = path[i - 1];
       const to = path[i];
-      const target = Math.atan2(this.wx(to.x) - this.wx(from.x), this.wz(to.y) - this.wz(from.y));
-      this.turnTo(view, target);
+      this.turnTo(view, yawTowards(to.x - from.x, to.y - from.y));
 
       const sx = this.wx(from.x);
       const sz = this.wz(from.y);
@@ -287,31 +312,87 @@ export class World {
     view.model.rotation.y = view.facing;
   }
 
-  /** Lunge, flash, and float the damage number off the target. */
-  async animateAttack(attackerId: number, target: Point, damage: number): Promise<void> {
-    const view = this.views.get(attackerId);
+  /** Where the shot leaves the barrel, given who is firing and which way. */
+  private muzzlePoint(
+    type: UnitId,
+    origin: THREE.Vector3,
+    forward: THREE.Vector3,
+  ): THREE.Vector3 {
+    const spec = MUZZLE[type];
+    return origin
+      .clone()
+      .addScaledVector(forward, spec.forward * UNIT_SCALE)
+      .setY(spec.height * UNIT_SCALE);
+  }
+
+  /**
+   * One exchange of fire: turn, recoil, muzzle flash, round in flight, impact.
+   * The target's model is pulled at the moment of the blast so it disappears
+   * inside the explosion rather than blinking out afterwards.
+   */
+  async animateAttack(spec: AttackAnimation): Promise<void> {
+    const view = this.views.get(spec.attackerId);
     if (view === undefined) return;
 
     const origin = view.model.position.clone();
-    const toward = new THREE.Vector3(this.wx(target.x), 0, this.wz(target.y))
-      .sub(origin)
-      .normalize()
-      .multiplyScalar(0.22);
+    const targetPoint = new THREE.Vector3(
+      this.wx(spec.targetTile.x),
+      0,
+      this.wz(spec.targetTile.y),
+    );
 
-    this.turnTo(view, Math.atan2(toward.x, toward.z));
+    const forward = targetPoint.clone().sub(origin).setY(0);
+    if (forward.lengthSq() < 1e-6) forward.set(0, 0, -1);
+    forward.normalize();
+    this.turnTo(view, yawTowards(forward.x, forward.z));
 
-    await this.run(0.13, (t) => {
+    const muzzle = this.muzzlePoint(spec.attackerType, origin, forward);
+    const impact = targetPoint.clone().setY(0.32);
+
+    // Recoil and muzzle flash fire together; the round leaves once the gun has
+    // finished kicking back.
+    const recoil = this.run(0.12, (t) => {
       const k = Math.sin(easeInOut(t) * Math.PI);
-      view.model.position.copy(origin).addScaledVector(toward, k);
+      view.model.position.copy(origin).addScaledVector(forward, -0.18 * k);
     });
+    this.effects.muzzleFlash(muzzle, forward, spec.indirect ? 1.35 : 1);
+    await recoil;
     view.model.position.copy(origin);
 
-    if (damage > 0) await this.popDamage(target, damage);
+    if (spec.indirect) await this.effects.shell(muzzle, impact);
+    else await this.effects.tracer(muzzle, impact);
+
+    if (spec.destroyed) {
+      const victim = this.views.get(spec.targetId);
+      if (victim !== undefined) {
+        this.unitLayer.remove(victim.model);
+        this.views.delete(spec.targetId);
+      }
+      this.effects.destruction(impact, TEAMS[spec.targetOwner].primary);
+    } else {
+      this.effects.explosion(impact, 1);
+      const hit = this.views.get(spec.targetId);
+      if (hit !== undefined) {
+        // A short squash sells the impact without needing a hit material.
+        const model = hit.model;
+        void this.run(0.2, (t) => {
+          const k = Math.sin(t * Math.PI);
+          model.scale.set(
+            UNIT_SCALE * (1 + k * 0.12),
+            UNIT_SCALE * (1 - k * 0.16),
+            UNIT_SCALE * (1 + k * 0.12),
+          );
+        });
+      }
+    }
+
+    if (spec.damage > 0) await this.popDamage(spec.targetTile, spec.damage);
   }
 
   private popDamage(at: Point, amount: number): Promise<void> {
     const popup = damagePopup(amount);
-    popup.position.set(this.wx(at.x), 0.7, this.wz(at.y));
+    // Above the blast, not inside it: at impact the fireball fills the tile.
+    popup.position.set(this.wx(at.x), 1.25, this.wz(at.y));
     this.effectLayer.add(popup);
 
     return this.run(0.42, (t) => {
@@ -333,6 +414,8 @@ export class World {
    */
   dispose(): void {
     this.ticking.length = 0;
+    this.effects.clear();
+    this.effects.setShakeSink(null);
     this.stage.scene.remove(this.root);
     this.views.clear();
     this.tileMeshes.clear();
@@ -340,10 +423,16 @@ export class World {
     this.captureBadges.clear();
   }
 
+  /** Route explosion jolts to the camera. */
+  setShakeSink(sink: ShakeSink | null): void {
+    this.effects.setShakeSink(sink);
+  }
+
   update(dt: number): void {
     for (let i = this.ticking.length - 1; i >= 0; i--) {
       if (!this.ticking[i](dt)) this.ticking.splice(i, 1);
     }
+    this.effects.update(dt);
     this.overlay.update(dt);
   }
 

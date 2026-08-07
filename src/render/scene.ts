@@ -180,6 +180,8 @@ export class CameraRig {
   readonly target = new THREE.Vector3();
   private distance: number;
   private readonly fitDistance: number;
+  private shakeAmount = 0;
+  private readonly shakeOffset = new THREE.Vector3();
 
   constructor(
     private readonly stage: Stage,
@@ -222,9 +224,37 @@ export class CameraRig {
     this.panBy(0, 0);
   }
 
+  /** Add a jolt. Repeated hits stack up to a cap rather than resetting. */
+  shake(amount: number): void {
+    this.shakeAmount = Math.min(0.42, this.shakeAmount + amount);
+  }
+
+  /** Decay the jolt and re-offset the camera; call once per frame. */
+  updateShake(dt: number): void {
+    if (this.shakeAmount <= 0.0005) {
+      if (this.shakeOffset.lengthSq() > 0) {
+        this.shakeOffset.set(0, 0, 0);
+        this.apply();
+      }
+      return;
+    }
+    this.shakeAmount = Math.max(0, this.shakeAmount - dt * 1.9);
+    const a = this.shakeAmount;
+    this.shakeOffset.set(
+      (Math.random() - 0.5) * a,
+      (Math.random() - 0.5) * a * 0.55,
+      (Math.random() - 0.5) * a,
+    );
+    this.apply();
+  }
+
   apply(): void {
     const camera = this.stage.camera;
-    camera.position.copy(VIEW_DIR).multiplyScalar(this.distance).add(this.target);
+    camera.position
+      .copy(VIEW_DIR)
+      .multiplyScalar(this.distance)
+      .add(this.target)
+      .add(this.shakeOffset);
     camera.lookAt(this.target);
 
     this.stage.key.position.set(this.target.x + 9, 16, this.target.z + 7);
