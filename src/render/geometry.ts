@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 
 /**
  * Rounded boxes everywhere. Sharp cube edges are what make procedural models
@@ -13,7 +14,9 @@ export function roundedBox(
   height: number,
   depth: number,
   radius = Math.min(width, height, depth) * 0.16,
-  segments = 2,
+  // One segment is enough for a readable bevel at this scale and costs about
+  // half the triangles of the default two.
+  segments = 1,
 ): RoundedBoxGeometry {
   const safeRadius = Math.min(radius, Math.min(width, height, depth) / 2 - 1e-4);
   const id = `${width}|${height}|${depth}|${safeRadius}|${segments}`;
@@ -79,4 +82,61 @@ export function tileRandom(x: number, y: number, salt = 0): number {
 /** Small helper for "pick one of these, deterministically". */
 export function pick<T>(items: readonly T[], roll: number): T {
   return items[Math.min(items.length - 1, Math.floor(roll * items.length))];
+}
+
+/**
+ * Collapse a group of meshes into one mesh per material.
+ *
+ * Models here are assembled from dozens of small primitives, which is lovely
+ * to author and terrible to draw: a board of 300 tiles was issuing a few
+ * thousand draw calls per frame, twice over once shadows are counted. Baking
+ * the transforms into merged buffers cuts that to roughly one call per finish
+ * and costs nothing, because none of these parts animate independently.
+ */
+export function bake(source: THREE.Object3D): THREE.Group {
+  source.updateMatrixWorld(true);
+
+  const buckets = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  let castShadow = false;
+  let receiveShadow = false;
+
+  source.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const material = mesh.material as THREE.Material;
+    if (Array.isArray(mesh.material)) return;
+
+    // Merging requires identical attribute sets and a consistent index across
+    // the whole batch. Boxes come out indexed while cones and cylinders do
+    // not, so everything is flattened to non-indexed first — otherwise the
+    // merge silently returns null and those parts vanish from the model.
+    let geometry = mesh.geometry.clone();
+    if (geometry.index !== null) geometry = geometry.toNonIndexed();
+    geometry.applyMatrix4(mesh.matrixWorld);
+    geometry.deleteAttribute("uv1");
+
+    const bucket = buckets.get(material);
+    if (bucket === undefined) buckets.set(material, [geometry]);
+    else bucket.push(geometry);
+
+    castShadow ||= mesh.castShadow;
+    receiveShadow ||= mesh.receiveShadow;
+  });
+
+  const baked = new THREE.Group();
+  for (const [material, geometries] of buckets) {
+    const merged =
+      geometries.length === 1 ? geometries[0] : mergeGeometries(geometries, false);
+    if (merged === null) {
+      // Never drop geometry silently: a failed merge means a visibly
+      // incomplete model, so fall back to unmerged meshes.
+      for (const geometry of geometries) baked.add(new THREE.Mesh(geometry, material));
+      continue;
+    }
+    const mesh = new THREE.Mesh(merged, material);
+    mesh.castShadow = castShadow;
+    mesh.receiveShadow = receiveShadow;
+    baked.add(mesh);
+  }
+  return baked;
 }

@@ -10,21 +10,348 @@ body {
   height: 100%;
   background: #0d1117;
   overflow: hidden;
-  font-family: -apple-system, "Helvetica Neue", "PingFang SC", sans-serif;
+  font-family: -apple-system, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
 }
 
 #app {
+  position: relative;
   width: 100%;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 #screen {
   display: block;
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
-  cursor: none;
+  width: 100%;
+  height: 100%;
   background: #0d1117;
+}
+
+/* The HUD floats over the canvas; only its own panels take pointer events. */
+#hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: #16202c;
+}
+
+.panel {
+  position: absolute;
+  background: rgba(255, 253, 247, 0.94);
+  border-radius: 14px;
+  box-shadow:
+    0 2px 0 rgba(0, 0, 0, 0.16),
+    0 10px 26px rgba(12, 22, 34, 0.22);
+  padding: 12px 15px;
+  backdrop-filter: blur(6px);
+}
+
+/* ---- top bar: day, whose turn, both treasuries ---- */
+
+.topbar {
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 18px;
+}
+
+.day {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.treasury {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.05);
+  opacity: 0.5;
+  transition: opacity 0.18s;
+}
+
+.treasury.active {
+  opacity: 1;
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+
+.treasury .pip {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+.treasury.p0 {
+  color: #d1641a;
+}
+
+.treasury.p1 {
+  color: #2755a0;
+}
+
+/* ---- info panels ---- */
+
+.info-terrain {
+  left: 18px;
+  bottom: 18px;
+  min-width: 172px;
+}
+
+.info-unit {
+  right: 18px;
+  bottom: 18px;
+  min-width: 196px;
+}
+
+.info-title {
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 7px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.info-title .swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+}
+
+.stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+  line-height: 1.72;
+  color: #43505f;
+}
+
+.stat b {
+  color: #16202c;
+  font-variant-numeric: tabular-nums;
+}
+
+.stars {
+  letter-spacing: 2px;
+  color: #e0a020;
+}
+
+/* ---- floating menus anchored to the board ---- */
+
+.menu {
+  position: absolute;
+  pointer-events: auto;
+  padding: 6px;
+  min-width: 128px;
+}
+
+.menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #16202c;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.menu button:hover {
+  background: #1d6fd0;
+  color: #fff;
+}
+
+.menu button .cost {
+  float: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+  font-weight: 500;
+}
+
+.menu button:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+.menu button:disabled:hover {
+  background: transparent;
+  color: #16202c;
+}
+
+.menu-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #7b8794;
+  padding: 4px 12px 7px;
+  letter-spacing: 0.6px;
+}
+
+/* ---- combat forecast ---- */
+
+.forecast {
+  position: absolute;
+  pointer-events: none;
+  padding: 10px 13px;
+  min-width: 150px;
+}
+
+.forecast-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.forecast-row .value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.forecast-row.attack .value {
+  color: #c62f2f;
+}
+
+.forecast-row.counter .value {
+  color: #2755a0;
+}
+
+.forecast-kill {
+  margin-top: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #c62f2f;
+}
+
+/* ---- buttons and hints ---- */
+
+.end-turn {
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  pointer-events: auto;
+  border: 0;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  background: #d1641a;
+  padding: 11px 20px;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow:
+    0 3px 0 #99450e,
+    0 8px 18px rgba(12, 22, 34, 0.26);
+}
+
+.end-turn:active {
+  transform: translateY(2px);
+  box-shadow:
+    0 1px 0 #99450e,
+    0 4px 10px rgba(12, 22, 34, 0.26);
+}
+
+.end-turn:disabled {
+  background: #9aa3ad;
+  box-shadow: 0 3px 0 #6f767e;
+  cursor: default;
+}
+
+.hint {
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  font-size: 12px;
+  color: #43505f;
+  padding: 8px 16px;
+  white-space: nowrap;
+}
+
+.hint kbd {
+  font: inherit;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.07);
+  border-radius: 5px;
+  padding: 2px 6px;
+  margin: 0 2px;
+}
+
+/* ---- turn change and result banners ---- */
+
+.banner {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 42%;
+  text-align: center;
+  font-size: 44px;
+  font-weight: 800;
+  letter-spacing: 3px;
+  color: #fff;
+  text-shadow:
+    0 3px 0 rgba(0, 0, 0, 0.28),
+    0 10px 30px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+.banner.show {
+  opacity: 1;
+}
+
+.result {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: rgba(10, 18, 28, 0.55);
+  pointer-events: auto;
+  backdrop-filter: blur(3px);
+}
+
+.result h1 {
+  font-size: 52px;
+  color: #fff;
+  letter-spacing: 4px;
+  text-shadow: 0 4px 0 rgba(0, 0, 0, 0.3);
+}
+
+.result p {
+  font-size: 17px;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.result button {
+  margin-top: 10px;
+  border: 0;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  color: #16202c;
+  background: #ffd479;
+  padding: 13px 28px;
+  border-radius: 13px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 #b08d3c;
+}
+
+.hidden {
+  display: none !important;
 }

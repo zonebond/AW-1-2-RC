@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { TEAMS, type TeamColors } from "./palette";
 import { glass, metal, plastic, rubber } from "./materials";
-import { cylinder, part, roundedBox, sphere } from "./geometry";
+import { bake, cylinder, part, roundedBox, sphere } from "./geometry";
 import type { PlayerId, UnitId } from "../core/types";
 
 /**
@@ -367,11 +367,24 @@ const BUILDERS: Record<UnitId, (colors: TeamColors) => THREE.Group> = {
 /** Slightly under a tile wide, so neighbouring units never visually merge. */
 const UNIT_SCALE = 0.9;
 
+/**
+ * One baked template per unit type and livery. Instances are clones, which
+ * share the merged geometry and the material, so putting twenty tanks on the
+ * board costs twenty draw calls rather than four hundred.
+ */
+const templates = new Map<string, THREE.Group>();
+
 export function buildUnitModel(type: UnitId, owner: PlayerId): THREE.Group {
-  const group = BUILDERS[type](TEAMS[owner]);
+  const id = `${type}:${owner}`;
+  let template = templates.get(id);
+  if (template === undefined) {
+    template = bake(BUILDERS[type](TEAMS[owner]));
+    templates.set(id, template);
+  }
+
   const wrapper = new THREE.Group();
-  wrapper.add(group);
+  wrapper.add(template.clone());
   wrapper.scale.setScalar(UNIT_SCALE);
-  wrapper.name = `unit:${type}:${owner}`;
+  wrapper.name = `unit:${id}`;
   return wrapper;
 }

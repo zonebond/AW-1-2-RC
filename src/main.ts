@@ -5,31 +5,71 @@ import { BUILD_ORDER, UNITS } from "./core/units";
 import { buildBoard, worldX, worldZ } from "./render/board";
 import { buildUnitModel } from "./render/unitModels";
 import { createStage, frameBoard } from "./render/scene";
+import { Controller } from "./ui/controller";
 import type { PlayerId, UnitId } from "./core/types";
 
+const app = document.getElementById("app")!;
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
-const stage = createStage(canvas);
-
 const params = new URLSearchParams(location.search);
-const view = params.get("view") ?? "board";
+
+// Shadows are the single most expensive thing on screen; the URL exposes the
+// dial so the quality/performance trade-off can be measured, not guessed.
+const stage = createStage(canvas, {
+  shadowMapSize: Number(params.get("shadow") ?? 1024),
+  antialias: params.get("aa") !== "0",
+});
+const view = params.get("view") ?? "play";
 
 function fitToWindow(): void {
   stage.resize(window.innerWidth, window.innerHeight);
 }
-window.addEventListener("resize", () => {
-  fitToWindow();
-  stage.render();
-});
 fitToWindow();
 
-if (view === "units") {
-  showUnitParade();
-} else {
-  showBoard(params.get("map") ?? MAPS[0].id);
+let controller: Controller | null = null;
+
+switch (view) {
+  case "units":
+    showUnitParade();
+    break;
+  case "board":
+    showStaticBoard(params.get("map") ?? MAPS[0].id);
+    break;
+  default:
+    controller = new Controller(
+      stage,
+      app,
+      mapById(params.get("map") ?? MAPS[0].id),
+      Number(params.get("speed") ?? 1),
+    );
+    break;
 }
 
-/** The playable board with a representative spread of units on it. */
-function showBoard(mapId: string): void {
+if (import.meta.env.DEV && controller !== null) {
+  // Handle for tools/playtest.mjs; never present in a production build.
+  (window as unknown as { __aw: unknown }).__aw = controller.debug();
+}
+
+window.addEventListener("resize", () => {
+  fitToWindow();
+  if (controller === null) stage.render();
+});
+
+// One clock for everything: animations, the cursor bob, and the AI's pacing
+// all advance from this single delta.
+let last = performance.now();
+function frame(now: number): void {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  controller?.update(dt);
+  stage.render();
+  requestAnimationFrame(frame);
+}
+
+if (controller !== null) requestAnimationFrame(frame);
+else stage.render();
+
+/** Static board with a spread of units, for judging terrain and lighting. */
+function showStaticBoard(mapId: string): void {
   const map = mapById(mapId).build();
   const board = buildBoard(map);
   stage.scene.add(board.group);
@@ -59,18 +99,16 @@ function showBoard(mapId: string): void {
   for (const [type, owner, x, y] of placements) {
     const model = buildUnitModel(type, owner);
     model.position.set(worldX(map, x), 0, worldZ(map, y));
-    // Each side faces the other across the river.
-    model.rotation.y = owner === 0 ? 0 : Math.PI;
+    model.rotation.y = owner === 0 ? Math.PI : 0;
     stage.scene.add(model);
   }
 
   frameBoard(stage, map.width, map.height, Number(params.get("zoom") ?? 1));
-  stage.render();
 }
 
 /**
- * Close-up 3x3 parade of every unit in both liveries. This is the view I use
- * to judge the models themselves, away from terrain and lighting distractions.
+ * Close-up 3x3 parade of every unit in both liveries. This is the view used to
+ * judge the models themselves, away from terrain and lighting distractions.
  */
 function showUnitParade(): void {
   const cols = 3;
@@ -114,7 +152,5 @@ function showUnitParade(): void {
   stage.scene.fog = null;
   frameBoard(stage, cols * cellX + 0.4, rows * cellZ + 0.4, 0.88);
 
-  // Log the roster so the console doubles as a legend while reviewing models.
   console.info(BUILD_ORDER.map((id) => `${UNITS[id].name}(${id})`).join(" · "));
-  stage.render();
 }

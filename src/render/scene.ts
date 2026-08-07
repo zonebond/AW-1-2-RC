@@ -27,10 +27,17 @@ function backdrop(): THREE.Texture {
   return texture;
 }
 
-export function createStage(canvas: HTMLCanvasElement): Stage {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+export interface StageOptions {
+  /** Shadow map resolution; 0 turns shadows off entirely. */
+  shadowMapSize?: number;
+  antialias?: boolean;
+}
+
+export function createStage(canvas: HTMLCanvasElement, options: StageOptions = {}): Stage {
+  const { shadowMapSize = 1024, antialias = true } = options;
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.enabled = shadowMapSize > 0;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.08;
@@ -47,8 +54,8 @@ export function createStage(canvas: HTMLCanvasElement): Stage {
   // work of making flat-coloured plastic look three-dimensional.
   const key = new THREE.DirectionalLight(0xfff2df, 2.5);
   key.position.set(9, 16, 7);
-  key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
+  key.castShadow = shadowMapSize > 0;
+  if (shadowMapSize > 0) key.shadow.mapSize.set(shadowMapSize, shadowMapSize);
   key.shadow.camera.near = 1;
   key.shadow.camera.far = 60;
   key.shadow.bias = -0.0008;
@@ -108,7 +115,7 @@ function boardCorners(width: number, height: number): THREE.Vector3[] {
  * a fixed 3/4 view. A bounding-sphere fit would be simpler, but it wastes a
  * third of the screen on a wide board — and screen space is the whole point.
  */
-export function frameBoard(stage: Stage, width: number, height: number, zoom = 1): void {
+export function frameBoard(stage: Stage, width: number, height: number, zoom = 1): number {
   const camera = stage.camera;
   const corners = boardCorners(width, height);
 
@@ -161,4 +168,67 @@ export function frameBoard(stage: Stage, width: number, height: number, zoom = 1
   shadow.updateProjectionMatrix();
 
   stage.scene.fog = new THREE.Fog(PALETTE.fog, distance * 0.9, distance * 2.4);
+  return distance;
+}
+
+/**
+ * Camera controller for play: the angle never changes, only how far out the
+ * camera sits and what point on the board it is centred on. Keeping the view
+ * direction locked means the grid never rotates under the player's mouse.
+ */
+export class CameraRig {
+  readonly target = new THREE.Vector3();
+  private distance: number;
+  private readonly fitDistance: number;
+
+  constructor(
+    private readonly stage: Stage,
+    private readonly width: number,
+    private readonly height: number,
+  ) {
+    this.fitDistance = frameBoard(stage, width, height);
+    this.distance = this.fitDistance;
+    this.apply();
+  }
+
+  /** 1 = whole board visible; smaller numbers move in for a closer look. */
+  get zoom(): number {
+    return this.distance / this.fitDistance;
+  }
+
+  zoomBy(factor: number): void {
+    this.distance = THREE.MathUtils.clamp(
+      this.distance * factor,
+      this.fitDistance * 0.3,
+      this.fitDistance * 1.05,
+    );
+    this.apply();
+  }
+
+  /** Pan in screen space; the board never rotates so the mapping is direct. */
+  panBy(dx: number, dz: number): void {
+    // Panning is pointless when the whole board already fits on screen.
+    const slackX = Math.max(0, (this.width / 2) * (1 - this.zoom));
+    const slackZ = Math.max(0, (this.height / 2) * (1 - this.zoom));
+    this.target.x = THREE.MathUtils.clamp(this.target.x + dx, -slackX, slackX);
+    this.target.z = THREE.MathUtils.clamp(this.target.z + dz, -slackZ, slackZ);
+    this.apply();
+  }
+
+  /** Bring a board position into view without jumping the zoom level. */
+  focus(x: number, z: number): void {
+    this.target.x = x;
+    this.target.z = z;
+    this.panBy(0, 0);
+  }
+
+  apply(): void {
+    const camera = this.stage.camera;
+    camera.position.copy(VIEW_DIR).multiplyScalar(this.distance).add(this.target);
+    camera.lookAt(this.target);
+
+    this.stage.key.position.set(this.target.x + 9, 16, this.target.z + 7);
+    this.stage.key.target.position.copy(this.target);
+    this.stage.key.target.updateMatrixWorld();
+  }
 }

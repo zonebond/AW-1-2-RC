@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { NEUTRAL_COLORS, PALETTE, TEAMS, type TeamColors } from "./palette";
 import { glass, metal, plastic, rubber } from "./materials";
-import { cylinder, part, pick, roundedBox, sphere, tileRandom } from "./geometry";
+import { bake, cylinder, part, pick, roundedBox, sphere, tileRandom } from "./geometry";
 import { NEUTRAL, type Owner, type TerrainId } from "../core/types";
 
 /** One tile is one world unit. Everything else is expressed as a fraction. */
@@ -375,7 +375,10 @@ const BUILDERS: Record<TerrainId, (ctx: TileContext) => THREE.Group> = {
 };
 
 export function buildTerrainTile(ctx: TileContext): THREE.Group {
-  const group = BUILDERS[ctx.terrain](ctx);
+  // Baked per tile: nothing inside a tile moves independently, and properties
+  // are rebuilt wholesale when captured, so there is no reason to pay for a
+  // draw call per window pane and flag pole.
+  const group = bake(BUILDERS[ctx.terrain](ctx));
   group.name = `tile:${ctx.x},${ctx.y}`;
   return group;
 }

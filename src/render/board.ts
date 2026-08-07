@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { tileAt, type GameMap } from "../core/map";
 import { buildTerrainTile, SLAB_H, TILE, type TileContext } from "./terrainModels";
 import { plastic } from "./materials";
-import { roundedBox } from "./geometry";
+import { bake, roundedBox } from "./geometry";
+import { TERRAIN } from "../core/terrain";
 import type { TerrainId } from "../core/types";
 
 /** Tile (x, y) sits at world (x - w/2, 0, y - h/2), so the board is centred. */
@@ -23,8 +24,14 @@ export interface Board {
   map: GameMap;
 }
 
+/**
+ * Terrain splits in two: scenery that never changes gets baked into a handful
+ * of merged meshes, while properties stay as individual groups because their
+ * roofs and flags have to be rebuilt the moment they are captured.
+ */
 export function buildBoard(map: GameMap): Board {
   const group = new THREE.Group();
+  const scenery = new THREE.Group();
 
   for (let y = 0; y < map.height; y++) {
     for (let x = 0; x < map.width; x++) {
@@ -41,11 +48,13 @@ export function buildBoard(map: GameMap): Board {
       };
       const mesh = buildTerrainTile(ctx);
       mesh.position.set(worldX(map, x), 0, worldZ(map, y));
-      group.add(mesh);
+      if (TERRAIN[tile.terrain].capturable) group.add(mesh);
+      else scenery.add(mesh);
     }
   }
 
-  group.add(baseplate(map));
+  scenery.add(baseplate(map));
+  group.add(bake(scenery));
   return { group, map };
 }
 

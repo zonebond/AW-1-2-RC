@@ -73,7 +73,28 @@ export function glass(color = 0x86c5e8): THREE.MeshStandardMaterial {
   return plastic(color, { roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.85 });
 }
 
+const dimCache = new Map<string, THREE.MeshStandardMaterial>();
+
+/**
+ * The washed-out version of a finish, used for units that have already acted.
+ * Materials are shared across every model, so a unit cannot simply be tinted —
+ * instead each mesh swaps to the cached dim twin of whatever it was using.
+ */
+export function dimmed(source: THREE.MeshStandardMaterial): THREE.MeshStandardMaterial {
+  const hit = dimCache.get(source.uuid);
+  if (hit !== undefined) return hit;
+
+  const copy = source.clone();
+  copy.color.multiplyScalar(0.52);
+  copy.color.lerp(new THREE.Color(0x5a6472), 0.35);
+  copy.roughness = Math.min(1, source.roughness + 0.2);
+  dimCache.set(source.uuid, copy);
+  return copy;
+}
+
 export function disposeMaterialCache(): void {
+  for (const material of dimCache.values()) material.dispose();
+  dimCache.clear();
   for (const material of cache.values()) material.dispose();
   cache.clear();
 }
