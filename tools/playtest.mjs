@@ -474,10 +474,65 @@ for (let round = 0; round < 5 && !fought; round++) {
 check("完成一次战斗", fought);
 
 /* ------------------------------------------------------------------ *
- * 9. Restart must rebuild the board without taking the lights with it
+ * 9. Camera: panning must always be reversible
  * ------------------------------------------------------------------ */
 
-console.log("\n[9] 重开一局");
+console.log("\n[9] 镜头");
+
+const camera = () => page.evaluate(() => window.__aw.camera());
+const canvasBox = await page.locator("#screen").boundingBox();
+const centre = { x: canvasBox.x + canvasBox.width / 2, y: canvasBox.y + canvasBox.height / 2 };
+
+// Left-drag has to pan: a trackpad has no middle button, so if this does not
+// work there is no way to move the board at all.
+const before = await camera();
+await page.mouse.move(centre.x, centre.y);
+await page.mouse.down();
+for (let i = 1; i <= 8; i++) {
+  await page.mouse.move(centre.x - i * 18, centre.y - i * 12);
+}
+await page.mouse.up();
+await page.waitForTimeout(150);
+const dragged = await camera();
+check(
+  "左键拖动可以平移镜头",
+  Math.abs(dragged.x - before.x) > 0.05 || Math.abs(dragged.z - before.z) > 0.05,
+  JSON.stringify({ before, dragged }),
+);
+
+// The drag must not have been read as a click on a tile.
+check("拖动不会被误判为点击", (await state()).mode !== "menu", `mode=${(await state()).mode}`);
+
+// Zooming all the way out has to bring the view back to the whole board,
+// not strand it wherever the pan left it.
+for (let i = 0; i < 14; i++) {
+  await page.mouse.wheel(0, 240);
+  await page.waitForTimeout(30);
+}
+await page.waitForTimeout(200);
+const zoomedOut = await camera();
+check("拉到最远时缩放归位", zoomedOut.zoom > 0.99, `zoom=${zoomedOut.zoom.toFixed(3)}`);
+check(
+  "拉到最远时镜头回到棋盘中心",
+  Math.abs(zoomedOut.x) < 0.01 && Math.abs(zoomedOut.z) < 0.01,
+  JSON.stringify(zoomedOut),
+);
+await shot("14-zoomed-out");
+
+// Space re-frames on your own army from wherever you are.
+await page.mouse.wheel(0, -600);
+await page.waitForTimeout(150);
+await page.keyboard.press("Space");
+await page.waitForTimeout(250);
+const reframed = await camera();
+check("空格重新对准己方部队", reframed.zoom > 0.6 && reframed.zoom < 0.85, `zoom=${reframed.zoom.toFixed(3)}`);
+await shot("15-reframed");
+
+/* ------------------------------------------------------------------ *
+ * 10. Restart must rebuild the board without taking the lights with it
+ * ------------------------------------------------------------------ */
+
+console.log("\n[10] 重开一局");
 const lightsBefore = await page.evaluate(() => window.__aw.lightCount());
 check("重开前灯光数正常", lightsBefore >= 4, `灯光数=${lightsBefore}`);
 

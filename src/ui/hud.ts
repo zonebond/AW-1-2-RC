@@ -83,7 +83,8 @@ export class Hud {
 
     const hint = element("div", "panel hint");
     hint.innerHTML =
-      "<kbd>左键</kbd>选择/确认　<kbd>右键</kbd>取消　<kbd>滚轮</kbd>缩放　<kbd>中键拖动</kbd>平移　<kbd>E</kbd>结束回合";
+      "<kbd>左键</kbd>选择/确认　<kbd>拖动</kbd>或<kbd>WASD</kbd>平移　" +
+      "<kbd>空格</kbd>回到我方　<kbd>右键</kbd>取消　<kbd>滚轮</kbd>缩放　<kbd>E</kbd>结束回合";
 
     this.endTurnButton.addEventListener("click", () => this.onEndTurn());
 

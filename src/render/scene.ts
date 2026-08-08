@@ -198,22 +198,43 @@ export class CameraRig {
     return this.distance / this.fitDistance;
   }
 
+  /** Set zoom directly as a fraction of the whole-board fit. */
+  setZoom(fraction: number): void {
+    this.distance = THREE.MathUtils.clamp(
+      this.fitDistance * fraction,
+      this.fitDistance * 0.3,
+      this.fitDistance * 1.05,
+    );
+    this.clampTarget();
+    this.apply();
+  }
+
   zoomBy(factor: number): void {
     this.distance = THREE.MathUtils.clamp(
       this.distance * factor,
       this.fitDistance * 0.3,
       this.fitDistance * 1.05,
     );
+    // Zooming out shrinks how far the camera is allowed to stray from the
+    // centre. Without re-clamping here, zooming out after panning leaves the
+    // view stranded off to one side with no way to walk it back.
+    this.clampTarget();
     this.apply();
+  }
+
+  /** Keep the look-at point inside whatever slack the current zoom allows. */
+  private clampTarget(): void {
+    const slackX = Math.max(0, (this.width / 2) * (1 - this.zoom));
+    const slackZ = Math.max(0, (this.height / 2) * (1 - this.zoom));
+    this.target.x = THREE.MathUtils.clamp(this.target.x, -slackX, slackX);
+    this.target.z = THREE.MathUtils.clamp(this.target.z, -slackZ, slackZ);
   }
 
   /** Pan in screen space; the board never rotates so the mapping is direct. */
   panBy(dx: number, dz: number): void {
-    // Panning is pointless when the whole board already fits on screen.
-    const slackX = Math.max(0, (this.width / 2) * (1 - this.zoom));
-    const slackZ = Math.max(0, (this.height / 2) * (1 - this.zoom));
-    this.target.x = THREE.MathUtils.clamp(this.target.x + dx, -slackX, slackX);
-    this.target.z = THREE.MathUtils.clamp(this.target.z + dz, -slackZ, slackZ);
+    this.target.x += dx;
+    this.target.z += dz;
+    this.clampTarget();
     this.apply();
   }
 
@@ -221,7 +242,8 @@ export class CameraRig {
   focus(x: number, z: number): void {
     this.target.x = x;
     this.target.z = z;
-    this.panBy(0, 0);
+    this.clampTarget();
+    this.apply();
   }
 
   /** Add a jolt. Repeated hits stack up to a cap rather than resetting. */

@@ -38,6 +38,9 @@ import type { Stage } from "../render/scene";
  * action is confirmed, so cancelling can walk it straight back.
  */
 
+/** Pixels of pointer travel before a press counts as a drag, not a click. */
+const DRAG_THRESHOLD = 6;
+
 function teamHex(player: PlayerId): string {
   return `#${TEAMS[player].light.toString(16).padStart(6, "0")}`;
 }
@@ -59,7 +62,9 @@ export class Controller {
   private readonly rig: CameraRig;
   private mode: Mode = { kind: "idle" };
   private hovered: Point | null = null;
-  private panning = false;
+  /** Which button is being held for a possible camera drag, if any. */
+  private dragButton: number | null = null;
+  private dragDistance = 0;
 
   constructor(
     private readonly stage: Stage,
@@ -90,7 +95,9 @@ export class Controller {
    * opening turn no sense of place.
    */
   private openingView(): void {
-    this.rig.zoomBy(0.72);
+    // Set, not multiply: this runs again at the start of every player turn,
+    // and a relative zoom would creep in a little closer each time.
+    this.rig.setZoom(0.72);
 
     const own = this.state.units.filter((u) => u.owner === 0);
     if (own.length === 0) return;
@@ -122,43 +129,109 @@ export class Controller {
     canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
     canvas.addEventListener("pointermove", (event) => {
-      if (this.panning) {
-        // Screen-space drag maps straight to board axes; the view never rotates.
-        const scale = this.rig.zoom * 0.028;
-        this.rig.panBy(-event.movementX * scale, -event.movementY * scale);
-        return;
+      if (this.dragButton !== null) {
+        // Past the threshold this is a camera drag, not a click. Tracking it
+        // this way means panning works with the left button on a trackpad,
+        // which has no middle button at all.
+        this.dragDistance += Math.abs(event.movementX) + Math.abs(event.movementY);
+        if (this.dragButton === 1 || this.dragDistance > DRAG_THRESHOLD) {
+          const scale = this.rig.zoom * 0.03;
+          this.rig.panBy(-event.movementX * scale, -event.movementY * scale);
+          return;
+        }
       }
       this.onHover(this.world.tileAtScreen(event.clientX, event.clientY));
     });
 
     canvas.addEventListener("pointerdown", (event) => {
-      if (event.button === 1) {
-        this.panning = true;
-        canvas.setPointerCapture(event.pointerId);
-        event.preventDefault();
+      if (event.button === 2) {
+        void this.cancel();
         return;
       }
-      const tile = this.world.tileAtScreen(event.clientX, event.clientY);
-      if (event.button === 2) void this.cancel();
-      else if (tile !== null) void this.onClick(tile);
+      if (event.button !== 0 && event.button !== 1) return;
+      this.dragButton = event.button;
+      this.dragDistance = 0;
+        canvas.setPointerCapture(event.pointerId);
+      if (event.button === 1) event.preventDefault();
     });
 
-    canvas.addEventListener("pointerup", (event) => {
-      if (event.button === 1) this.panning = false;
+    const endDrag = (event: PointerEvent): void => {
+      const button = this.dragButton;
+      const distance = this.dragDistance;
+      this.dragButton = null;
+      this.dragDistance = 0;
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
+      // A left press that never turned into a drag is a click on the board.
+      if (button !== 0 || distance > DRAG_THRESHOLD) return;
+      const tile = this.world.tileAtScreen(event.clientX, event.clientY);
+      if (tile !== null) void this.onClick(tile);
+    };
+
+    canvas.addEventListener("pointerup", endDrag);
+    canvas.addEventListener("pointercancel", (event) => {
+      this.dragButton = null;
+      this.dragDistance = 0;
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
     });
 
     canvas.addEventListener(
       "wheel",
       (event) => {
         event.preventDefault();
+        // Trackpad pinch arrives as ctrl+wheel; a two-finger scroll arrives as
+        // plain wheel with both axes. Treat a horizontal component as a pan so
+        // trackpad users can move the board without any modifier.
+        if (!event.ctrlKey && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+          const scale = this.rig.zoom * 0.012;
+          this.rig.panBy(event.deltaX * scale, event.deltaY * scale);
+          return;
+        }
         this.rig.zoomBy(event.deltaY > 0 ? 1.12 : 0.89);
       },
       { passive: false },
     );
 
     window.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") void this.cancel();
-      if (event.key === "e" || event.key === "E") void this.endHumanTurn();
+      switch (event.key) {
+        case "Escape":
+          void this.cancel();
+          return;
+        case "e":
+        case "E":
+          void this.endHumanTurn();
+          return;
+        case " ":
+          // Always a way back: re-frame on your own army.
+          event.preventDefault();
+          this.openingView();
+          return;
+        default:
+          break;
+      }
+
+      const step = 0.9;
+      const pan: Record<string, [number, number]> = {
+        ArrowLeft: [-step, 0],
+        a: [-step, 0],
+        A: [-step, 0],
+        ArrowRight: [step, 0],
+        d: [step, 0],
+        D: [step, 0],
+        ArrowUp: [0, -step],
+        w: [0, -step],
+        W: [0, -step],
+        ArrowDown: [0, step],
+        s: [0, step],
+        S: [0, step],
+      };
+      const delta = pan[event.key];
+      if (delta === undefined) return;
+      event.preventDefault();
+      this.rig.panBy(delta[0], delta[1]);
     });
   }
 
@@ -632,6 +705,9 @@ export class Controller {
     endTurn(this.state);
     this.world.sync(this.state);
     this.hud.refresh(this.state);
+    // The camera followed the AI around; hand the player back a view of their
+    // own army rather than wherever the last enemy order happened to end.
+    this.openingView();
     await this.hud.flashBanner("红星军 回合", teamHex(0));
 
     this.mode = this.state.winner === null ? { kind: "idle" } : { kind: "over" };
@@ -662,6 +738,7 @@ export class Controller {
     restart: () => void;
     lightCount: () => number;
     focusTile: (x: number, y: number) => void;
+    camera: () => { x: number; z: number; zoom: number };
   } {
     return {
       state: () => this.state,
@@ -680,6 +757,11 @@ export class Controller {
       },
       aiProbe: () => void nextAiStep(this.state),
       restart: () => this.restart(),
+      camera: () => ({
+        x: this.rig.target.x,
+        z: this.rig.target.z,
+        zoom: this.rig.zoom,
+      }),
       focusTile: (x, y) =>
         this.rig.focus(
           x - (this.state.map.width - 1) / 2,
