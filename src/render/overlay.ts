@@ -14,8 +14,13 @@ import type { Point } from "../core/types";
 const SURFACE_Y = 0.035;
 const PATH_Y = 0.075;
 
-/** Diagonal hatching that scrolls, so a movement range reads as live. */
-function stripeTexture(): THREE.Texture {
+/**
+ * Diagonal hatching that scrolls, so a range reads as live rather than
+ * painted on. Movement and threat use opposite diagonals: over saturated
+ * grass a red wash and an orange-owned tile land on nearly the same colour,
+ * so the two have to be told apart by texture, not just hue.
+ */
+function stripeTexture(lean: 1 | -1 = 1): THREE.Texture {
   const size = 64;
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -29,7 +34,7 @@ function stripeTexture(): THREE.Texture {
   for (let i = -size; i < size * 2; i += 21) {
     ctx.beginPath();
     ctx.moveTo(i, 0);
-    ctx.lineTo(i + size, size);
+    ctx.lineTo(i + lean * size, size);
     ctx.stroke();
   }
 
@@ -237,7 +242,8 @@ export class Overlay {
   private readonly chevron: THREE.Sprite;
   private readonly pathFill: THREE.Mesh;
   private readonly pathEdge: THREE.Mesh;
-  private readonly stripes = stripeTexture();
+  private readonly stripes = stripeTexture(1);
+  private readonly threatStripes = stripeTexture(-1);
 
   private cursorTile: Point | null = null;
   private chevronTile: Point | null = null;
@@ -245,9 +251,7 @@ export class Overlay {
 
   constructor(private readonly map: GameMap) {
     this.movePool = new QuadPool(this.group, 0.96, 0x2f8ff0, 0.55, this.stripes);
-    // Against the brighter grass, a weak red wash turns muddy brown and reads
-    // as terrain rather than as a warning, so it is pushed harder here.
-    this.attackPool = new QuadPool(this.group, 0.96, 0xff2b2b, 0.56);
+    this.attackPool = new QuadPool(this.group, 0.96, 0xe11040, 0.52, this.threatStripes);
     this.targetPool = new QuadPool(this.group, 0.96, 0xff2d2d, 0.66);
 
     // Double sided on purpose: the ribbon is built as flat triangles in the
@@ -366,6 +370,7 @@ export class Overlay {
     // Scrolling hatch: the movement range should look like it is being offered
     // to you, not painted on.
     this.stripes.offset.set(-this.elapsed * 0.32, this.elapsed * 0.32);
+    this.threatStripes.offset.set(this.elapsed * 0.32, this.elapsed * 0.32);
 
     if (this.cursorTile !== null) {
       this.cursor.position.y = 0.09 + Math.sin(this.elapsed * 4.2) * 0.035;

@@ -27,18 +27,24 @@ export const PALETTE = {
   shrub: 0xe8a42c,
   shrubDark: 0xc47f18,
 
-  rock: 0xa1968a,
-  rockDark: 0x7d7266,
-  snow: 0xeef2f4,
+  // Rock is warm tan rather than grey: the reference peaks read as sun-baked
+  // earth, and grey stone against saturated grass looks like missing texture.
+  rock: 0xb28f61,
+  rockDark: 0x8a6a42,
+  rockLight: 0xd9c39a,
+  snow: 0xf0f2f2,
 
   foliage: 0x57a447,
   foliageDark: 0x3f8035,
   trunk: 0x7d5a3c,
 
-  concrete: 0xdad5c9,
-  concreteDark: 0xb3ac9d,
-  window: 0x86c5e8,
+  concrete: 0xeeeae0,
+  concreteDark: 0xc7bfae,
+  concreteShade: 0xd6d0c2,
+  window: 0x74bfe8,
+  windowLit: 0xa8dcf5,
   roofNeutral: 0xa8a196,
+  yard: 0x9d9689,
 
   sky: 0xbfe3f5,
   ground: 0x6b7a55,

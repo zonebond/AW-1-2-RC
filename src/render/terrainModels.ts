@@ -36,7 +36,7 @@ function isRoadLike(terrain: TerrainId | null): boolean {
  * gap between neighbouring tiles reads as a drawn grid line. Being able to
  * count tiles at a glance matters more here than a seamless field.
  */
-function groundSlab(top: number, side: number, grout = PALETTE.grout): THREE.Mesh {
+function groundSlab(top: number, side: number, grout: number = PALETTE.grout): THREE.Mesh {
   const mesh = part(roundedBox(TILE * 0.968, SLAB_H, TILE * 0.968, 0.04), plastic(top), 0, -SLAB_H / 2, 0);
 
   const base = part(roundedBox(TILE, SLAB_H * 0.92, TILE, 0.03), plastic(grout));
@@ -293,135 +293,222 @@ function buildWood(ctx: TileContext): THREE.Group {
 
 function buildMountain(ctx: TileContext): THREE.Group {
   const group = new THREE.Group();
-  group.add(groundSlab(PALETTE.rockDark, PALETTE.rockDark));
+  group.add(groundSlab(PALETTE.rockDark, PALETTE.rockDark, PALETTE.rockDark));
 
-  const height = 0.62 + tileRandom(ctx.x, ctx.y, 7) * 0.22;
-  const peak = part(
-    new THREE.ConeGeometry(0.46, height, 5),
-    plastic(PALETTE.rock, { flatShading: true, roughness: 0.8 }),
-    0,
-    height / 2,
-    0,
-  );
-  peak.rotation.y = tileRandom(ctx.x, ctx.y, 8) * Math.PI * 2;
-  group.add(peak);
+  // Three overlapping faceted peaks of different heights. A single cone reads
+  // as a traffic bollard; the overlap is what makes it a mountain.
+  const peaks: Array<[number, number, number, number]> = [
+    [0.44, 0.72, 0, 0],
+    [0.27, 0.46, -0.28, 0.18],
+    [0.22, 0.36, 0.26, -0.2],
+  ];
 
-  // A smaller shoulder peak stops every mountain looking identical.
-  const shoulderH = height * 0.55;
-  const shoulder = part(
-    new THREE.ConeGeometry(0.24, shoulderH, 5),
-    plastic(PALETTE.rockDark, { flatShading: true, roughness: 0.85 }),
-    (tileRandom(ctx.x, ctx.y, 9) - 0.5) * 0.42,
-    shoulderH / 2,
-    (tileRandom(ctx.x, ctx.y, 10) - 0.5) * 0.42,
-  );
-  shoulder.rotation.y = tileRandom(ctx.x, ctx.y, 12) * Math.PI * 2;
-  group.add(shoulder);
+  peaks.forEach(([radius, height, dx, dz], index) => {
+    const jitter = tileRandom(ctx.x, ctx.y, 7 + index);
+    const h = height * (0.85 + jitter * 0.35);
+    const cone = part(
+      new THREE.ConeGeometry(radius, h, 5),
+      plastic(index === 0 ? PALETTE.rock : PALETTE.rockDark, {
+        flatShading: true,
+        roughness: 0.85,
+      }),
+      dx,
+      h / 2,
+      dz,
+    );
+    cone.rotation.y = tileRandom(ctx.x, ctx.y, 30 + index) * Math.PI * 2;
+    group.add(cone);
 
-  const cap = part(
-    new THREE.ConeGeometry(0.17, height * 0.3, 5),
-    plastic(PALETTE.snow, { flatShading: true, roughness: 0.65 }),
-    0,
-    height - height * 0.15,
-    0,
-  );
-  cap.rotation.y = peak.rotation.y;
-  group.add(cap);
+    // A pale cap on the tip of each peak, catching the light like bare stone.
+    const cap = part(
+      new THREE.ConeGeometry(radius * 0.4, h * 0.3, 5),
+      plastic(index === 0 ? PALETTE.rockLight : PALETTE.rock, {
+        flatShading: true,
+        roughness: 0.75,
+      }),
+      dx,
+      h * 0.86,
+      dz,
+    );
+    cap.rotation.y = cone.rotation.y;
+    group.add(cap);
+  });
+
+  // Loose boulders around the base soften the join with the tile.
+  for (let i = 0; i < 3; i++) {
+    const angle = tileRandom(ctx.x, ctx.y, 50 + i) * Math.PI * 2;
+    const reach = 0.32 + tileRandom(ctx.x, ctx.y, 60 + i) * 0.12;
+    const size = 0.06 + tileRandom(ctx.x, ctx.y, 70 + i) * 0.05;
+    const rock = part(
+      sphere(size, 6),
+      plastic(PALETTE.rockDark, { flatShading: true, roughness: 0.9 }),
+      Math.cos(angle) * reach,
+      size * 0.55,
+      Math.sin(angle) * reach,
+    );
+    rock.scale.set(1, 0.72, 1.15);
+    group.add(rock);
+  }
   return group;
 }
 
-function windowBand(width: number, depth: number, y: number): THREE.Mesh {
-  const band = part(roundedBox(width, 0.07, depth, 0.02), glass(), 0, y, 0);
+/** A ring of glazing wrapped around a tower at one floor level. */
+function windowBand(width: number, depth: number, y: number, height = 0.07): THREE.Mesh {
+  const band = part(roundedBox(width, height, depth, 0.018), glass(), 0, y, 0);
   band.castShadow = false;
   return band;
 }
 
+/**
+ * Paved apron under every property. The thin band of owner colour around the
+ * plot matters more than it looks: ownership has to be readable when the
+ * buildings themselves are only a few pixels tall.
+ */
+function apron(colors: TeamColors): THREE.Group {
+  const group = new THREE.Group();
+  group.add(groundSlab(PALETTE.concreteShade, PALETTE.concreteDark, PALETTE.concreteDark));
+
+  const trim = part(
+    roundedBox(TILE * 0.95, 0.045, TILE * 0.95, 0.02),
+    plastic(colors.primary),
+    0,
+    0.005,
+    0,
+  );
+  trim.castShadow = false;
+  const inner = part(
+    roundedBox(TILE * 0.87, 0.05, TILE * 0.87, 0.02),
+    plastic(PALETTE.concreteShade),
+    0,
+    0.012,
+    0,
+  );
+  inner.castShadow = false;
+  group.add(trim, inner);
+  return group;
+}
+
 function buildCity(ctx: TileContext): THREE.Group {
   const group = new THREE.Group();
-  group.add(groundSlab(PALETTE.concreteDark, PALETTE.concreteDark));
   const colors = ownerColors(ctx.owner);
+  group.add(apron(colors));
 
-  const spots: Array<[number, number]> = [
-    [-0.21, -0.21],
-    [0.22, -0.19],
-    [-0.19, 0.22],
-    [0.21, 0.21],
+  // Slim towers rather than squat blocks, glazed on every floor. The vertical
+  // proportion is what separates a city from a factory at a glance.
+  const spots: Array<[number, number, number]> = [
+    [-0.2, -0.2, 1],
+    [0.22, -0.18, 0.86],
+    [-0.18, 0.22, 0.78],
+    [0.2, 0.21, 0.68],
   ];
-  const count = 3 + (tileRandom(ctx.x, ctx.y, 13) > 0.5 ? 1 : 0);
+  const count = 3 + (tileRandom(ctx.x, ctx.y, 13) > 0.45 ? 1 : 0);
 
   for (let i = 0; i < count; i++) {
-    const [bx, bz] = spots[i];
-    const h = 0.3 + tileRandom(ctx.x, ctx.y, 200 + i) * 0.42;
-    const w = 0.26 + tileRandom(ctx.x, ctx.y, 220 + i) * 0.08;
-    const d = 0.26 + tileRandom(ctx.x, ctx.y, 240 + i) * 0.08;
+    const [bx, bz, scale] = spots[i];
+    const h = (0.42 + tileRandom(ctx.x, ctx.y, 200 + i) * 0.44) * scale;
+    const w = 0.22 + tileRandom(ctx.x, ctx.y, 220 + i) * 0.07;
+    const d = 0.22 + tileRandom(ctx.x, ctx.y, 240 + i) * 0.07;
 
     const block = new THREE.Group();
-    block.add(part(roundedBox(w, h, d, 0.03), plastic(PALETTE.concrete), 0, h / 2, 0));
-    block.add(windowBand(w * 1.02, d * 1.02, h * 0.62));
-    block.add(windowBand(w * 1.02, d * 1.02, h * 0.32));
-    // Owner-coloured roof: the fastest read of who holds the property.
-    block.add(part(roundedBox(w * 1.06, 0.06, d * 1.06, 0.02), plastic(colors.primary), 0, h, 0));
+    block.add(part(roundedBox(w, h, d, 0.025), plastic(PALETTE.concrete), 0, h / 2, 0));
+
+    const floors = Math.max(2, Math.round(h / 0.16));
+    for (let f = 1; f <= floors; f++) {
+      block.add(windowBand(w * 1.03, d * 1.03, (h * f) / (floors + 1), 0.06));
+    }
+
+    block.add(part(roundedBox(w * 1.1, 0.055, d * 1.1, 0.02), plastic(colors.primary), 0, h + 0.02, 0));
+    block.add(part(roundedBox(w * 0.34, 0.06, d * 0.34, 0.02), plastic(colors.dark), 0, h + 0.07, 0));
+
     block.position.set(bx, 0, bz);
     group.add(block);
   }
 
-  const banner = flag(colors, 0.4);
-  banner.position.set(0.36, 0, -0.36);
+  const banner = flag(colors, 0.34);
+  banner.position.set(0.38, 0, -0.38);
   group.add(banner);
   return group;
 }
 
 function buildBase(ctx: TileContext): THREE.Group {
   const group = new THREE.Group();
-  group.add(groundSlab(PALETTE.concreteDark, PALETTE.concreteDark));
   const colors = ownerColors(ctx.owner);
+  group.add(apron(colors));
 
-  const body = part(roundedBox(0.74, 0.34, 0.62, 0.05), plastic(PALETTE.concrete), 0, 0.17, 0);
-  group.add(body);
+  // A wide industrial shed under a barrel roof: low and long, so it is never
+  // mistaken for a cluster of city towers.
+  group.add(part(roundedBox(0.8, 0.3, 0.62, 0.04), plastic(PALETTE.concrete), 0, 0.15, 0));
+  group.add(part(roundedBox(0.82, 0.05, 0.64, 0.02), plastic(colors.dark), 0, 0.3, 0));
 
-  // A barrel-vaulted hangar roof in the owner's colour.
-  const roof = part(cylinder(0.33, 0.33, 0.66, 18), plastic(colors.primary), 0, 0.36, 0);
+  const roof = part(cylinder(0.33, 0.33, 0.8, 20), plastic(colors.primary), 0, 0.32, 0);
   roof.rotation.z = Math.PI / 2;
-  roof.scale.set(1, 1, 0.62);
+  roof.scale.set(1, 1, 0.58);
   group.add(roof);
+  group.add(part(roundedBox(0.84, 0.05, 0.09, 0.02), plastic(colors.light), 0, 0.51, 0));
 
-  const door = part(roundedBox(0.3, 0.24, 0.05, 0.02), plastic(colors.dark), 0, 0.13, 0.31);
-  group.add(door);
-  group.add(part(roundedBox(0.3, 0.03, 0.02, 0.008), plastic(colors.accent), 0, 0.25, 0.34));
+  // Roller door, front and centre.
+  group.add(part(roundedBox(0.4, 0.26, 0.05, 0.015), plastic(colors.dark), 0, 0.14, 0.315));
+  for (let i = 0; i < 4; i++) {
+    const slat = part(
+      roundedBox(0.36, 0.022, 0.02, 0.008),
+      plastic(colors.light),
+      0,
+      0.055 + i * 0.06,
+      0.335,
+    );
+    slat.castShadow = false;
+    group.add(slat);
+  }
+  group.add(part(roundedBox(0.46, 0.045, 0.06, 0.018), plastic(colors.accent), 0, 0.29, 0.325));
 
-  for (const cx of [-0.28, 0.28]) {
-    group.add(part(cylinder(0.045, 0.05, 0.26, 10), plastic(PALETTE.concreteDark), cx, 0.5, -0.2));
+  for (const [cx, height] of [
+    [-0.3, 0.3],
+    [0.3, 0.22],
+  ] as const) {
+    group.add(
+      part(cylinder(0.042, 0.05, height, 10), plastic(PALETTE.concreteDark), cx, 0.5 + height / 2, -0.16),
+    );
+    group.add(part(cylinder(0.055, 0.055, 0.04, 10), plastic(colors.dark), cx, 0.5 + height, -0.16));
   }
 
-  const banner = flag(colors, 0.42);
-  banner.position.set(0.36, 0, 0.34);
+  const banner = flag(colors, 0.44);
+  banner.position.set(0.38, 0, 0.36);
   group.add(banner);
   return group;
 }
 
 function buildHq(ctx: TileContext): THREE.Group {
   const group = new THREE.Group();
-  group.add(groundSlab(PALETTE.concreteDark, PALETTE.concreteDark));
   const colors = ownerColors(ctx.owner);
+  group.add(apron(colors));
 
-  // Three-step ziggurat: unmistakable at a glance, even zoomed out.
-  group.add(part(roundedBox(0.78, 0.22, 0.78, 0.04), plastic(PALETTE.concrete), 0, 0.11, 0));
-  group.add(part(roundedBox(0.6, 0.26, 0.6, 0.04), plastic(PALETTE.concrete), 0, 0.35, 0));
-  group.add(windowBand(0.62, 0.62, 0.38));
-  group.add(part(roundedBox(0.42, 0.28, 0.42, 0.04), plastic(colors.primary), 0, 0.62, 0));
-  group.add(part(roundedBox(0.5, 0.05, 0.5, 0.02), plastic(colors.dark), 0, 0.78, 0));
+  // One tall tower on a plinth. Height alone should say "headquarters" from
+  // across the board — this is the tile that ends the game.
+  group.add(part(roundedBox(0.76, 0.14, 0.76, 0.03), plastic(PALETTE.concreteDark), 0, 0.07, 0));
+  group.add(part(roundedBox(0.58, 0.5, 0.58, 0.04), plastic(PALETTE.concrete), 0, 0.39, 0));
+  group.add(windowBand(0.6, 0.6, 0.28, 0.08));
+  group.add(windowBand(0.6, 0.6, 0.5, 0.08));
+
+  group.add(part(roundedBox(0.66, 0.06, 0.66, 0.02), plastic(colors.dark), 0, 0.66, 0));
+  group.add(part(roundedBox(0.42, 0.24, 0.42, 0.04), plastic(colors.primary), 0, 0.8, 0));
+  group.add(windowBand(0.44, 0.44, 0.8, 0.07));
+
+  const crown = part(new THREE.ConeGeometry(0.3, 0.22, 4), plastic(colors.dark), 0, 1.02, 0);
+  crown.rotation.y = Math.PI / 4;
+  group.add(crown);
 
   for (const [cx, cz] of [
-    [-0.3, -0.3],
-    [0.3, -0.3],
-    [-0.3, 0.3],
-    [0.3, 0.3],
-  ]) {
-    group.add(part(roundedBox(0.1, 0.3, 0.1, 0.02), plastic(colors.dark), cx, 0.15, cz));
+    [-0.32, -0.32],
+    [0.32, -0.32],
+    [-0.32, 0.32],
+    [0.32, 0.32],
+  ] as const) {
+    group.add(part(roundedBox(0.09, 0.34, 0.09, 0.02), plastic(colors.dark), cx, 0.17, cz));
+    group.add(part(sphere(0.05, 8), plastic(colors.light), cx, 0.36, cz));
   }
 
-  const banner = flag(colors, 0.62);
-  banner.position.set(0, 0.8, 0);
+  const banner = flag(colors, 0.6);
+  banner.position.set(0, 1.1, 0);
   group.add(banner);
   return group;
 }
