@@ -60,6 +60,11 @@ export class Hud {
   private readonly unitPanel = element("div", "panel info-unit");
   private readonly menu = element("div", "panel menu hidden");
   private readonly build = element("div", "build hidden");
+  private readonly cinema = element("div", "cinema hidden");
+  private readonly cinemaCards: [HTMLElement, HTMLElement] = [
+    element("div", "combatant left"),
+    element("div", "combatant right"),
+  ];
   private readonly forecastPanel = element("div", "panel forecast hidden");
   private readonly banner = element("div", "banner");
   private readonly endTurnButton = element("button", "end-turn", "结束回合");
@@ -81,6 +86,10 @@ export class Hud {
       topbar.append(box);
     }
 
+    const bars = element("div", "cinema-bars");
+    bars.append(element("div", "cinema-bar top"), element("div", "cinema-bar bottom"));
+    this.cinema.append(bars, this.cinemaCards[0], this.cinemaCards[1]);
+
     const hint = element("div", "panel hint");
     hint.innerHTML =
       "<kbd>左键</kbd>选择/确认　<kbd>拖动</kbd>或<kbd>WASD</kbd>平移　" +
@@ -94,6 +103,7 @@ export class Hud {
       this.unitPanel,
       this.menu,
       this.build,
+      this.cinema,
       this.forecastPanel,
       this.banner,
       this.endTurnButton,
@@ -462,6 +472,61 @@ export class Hud {
     );
     node.style.left = `${x}px`;
     node.style.top = `${y}px`;
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Battle cutscene furniture
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Letterbox bars and a card per combatant. The cards carry the same HP
+   * figure the board does, so the moment a shot lands is legible without
+   * having to read the tiny badge on the model.
+   */
+  showBattle(attacker: Unit, defender: Unit): void {
+    // The tactical readouts share the bottom corners with the combatant cards,
+    // so they step aside for the duration.
+    this.terrainPanel.classList.add("hidden");
+    this.unitPanel.classList.add("hidden");
+    this.fillCombatant(this.cinemaCards[0], attacker);
+    this.fillCombatant(this.cinemaCards[1], defender);
+    this.cinema.classList.remove("hidden");
+    // A frame later, so the transition has a state to animate away from.
+    requestAnimationFrame(() => this.cinema.classList.add("show"));
+  }
+
+  /** Update one side's HP mid-exchange. `side` 0 is the attacker. */
+  updateBattleHp(side: 0 | 1, hp: number): void {
+    const card = this.cinemaCards[side];
+    const fill = card.querySelector(".combatant-fill") as HTMLElement | null;
+    if (fill !== null) fill.style.width = `${Math.max(0, Math.min(100, hp))}%`;
+    const label = card.querySelector(".combatant-hp");
+    if (label !== null) label.textContent = `${Math.max(0, displayHp(hp))}`;
+  }
+
+  hideBattle(): void {
+    this.cinema.classList.remove("show");
+    setTimeout(() => this.cinema.classList.add("hidden"), 260);
+  }
+
+  private fillCombatant(card: HTMLElement, unit: Unit): void {
+    const colors = TEAMS[unit.owner];
+    card.style.setProperty("--team", hex(colors.primary));
+
+    const name = element("div", "combatant-name", UNITS[unit.type].name);
+    const hp = element("div", "combatant-hp", `${displayHp(unit.hp)}`);
+
+    // A continuous bar, not ten pips. Damage is quoted on the 0-100 internal
+    // scale, so a six-point hit must visibly move something even though the
+    // 1-10 figure beside it does not change.
+    const bar = element("div", "combatant-bar");
+    const fill = element("div", "combatant-fill");
+    fill.style.width = `${Math.max(0, Math.min(100, unit.hp))}%`;
+    bar.append(fill);
+
+    const head = element("div", "combatant-head");
+    head.append(name, hp);
+    card.replaceChildren(head, bar);
   }
 
   /* ---------------------------------------------------------------- *

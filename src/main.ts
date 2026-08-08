@@ -46,6 +46,7 @@ switch (view) {
       app,
       mapById(params.get("map") ?? MAPS[0].id),
       Number(params.get("speed") ?? 1),
+      params.get("cutscene") !== "0" && Number(params.get("speed") ?? 1) < 4,
     );
     break;
 }
@@ -61,12 +62,15 @@ window.addEventListener("resize", () => {
 });
 
 // One clock for everything: animations, the cursor bob, and the AI's pacing
-// all advance from this single delta.
+// all advance from this single delta. ?manual=1 hands that clock to the
+// screenshot tools instead, so a cutscene frame can be captured exactly
+// rather than whenever the renderer happens to finish.
+const manualClock = params.get("manual") === "1";
 let last = performance.now();
 function frame(now: number): void {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  controller?.update(dt);
+  if (!manualClock) controller?.update(dt);
   stage.render();
   requestAnimationFrame(frame);
 }

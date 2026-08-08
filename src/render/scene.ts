@@ -182,6 +182,8 @@ export class CameraRig {
   private readonly fitDistance: number;
   private shakeAmount = 0;
   private readonly shakeOffset = new THREE.Vector3();
+  /** While suspended the rig leaves the camera alone, for cutscenes. */
+  private suspended = false;
 
   constructor(
     private readonly stage: Stage,
@@ -246,6 +248,26 @@ export class CameraRig {
     this.apply();
   }
 
+  /**
+   * Hand the camera over to something else — a battle cutscene, say. The rig
+   * keeps its own target and distance, so resuming restores the exact
+   * tactical view the player had before the interruption.
+   */
+  suspend(): void {
+    this.suspended = true;
+  }
+
+  resume(): void {
+    this.suspended = false;
+    this.shakeAmount = 0;
+    this.shakeOffset.set(0, 0, 0);
+    this.apply();
+  }
+
+  get isSuspended(): boolean {
+    return this.suspended;
+  }
+
   /** Add a jolt. Repeated hits stack up to a cap rather than resetting. */
   shake(amount: number): void {
     this.shakeAmount = Math.min(0.42, this.shakeAmount + amount);
@@ -253,6 +275,7 @@ export class CameraRig {
 
   /** Decay the jolt and re-offset the camera; call once per frame. */
   updateShake(dt: number): void {
+    if (this.suspended) return;
     if (this.shakeAmount <= 0.0005) {
       if (this.shakeOffset.lengthSq() > 0) {
         this.shakeOffset.set(0, 0, 0);
@@ -271,6 +294,7 @@ export class CameraRig {
   }
 
   apply(): void {
+    if (this.suspended) return;
     const camera = this.stage.camera;
     camera.position
       .copy(VIEW_DIR)

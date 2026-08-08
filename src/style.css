@@ -581,3 +581,102 @@ body {
   border-radius: 11px;
   cursor: pointer;
 }
+
+/* ---- battle cutscene ---- */
+
+.cinema {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cinema-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 11vh;
+  background: #0a0f16;
+  transition: transform 0.26s ease;
+}
+
+.cinema-bar.top {
+  top: 0;
+  transform: translateY(-100%);
+}
+
+.cinema-bar.bottom {
+  bottom: 0;
+  transform: translateY(100%);
+}
+
+.cinema.show .cinema-bar.top,
+.cinema.show .cinema-bar.bottom {
+  transform: translateY(0);
+}
+
+.combatant {
+  position: absolute;
+  bottom: calc(11vh + 16px);
+  min-width: 188px;
+  padding: 9px 13px;
+  border-radius: 12px;
+  background: rgba(12, 20, 30, 0.86);
+  border-left: 5px solid var(--team, #fff);
+  opacity: 0;
+  transition:
+    opacity 0.24s ease,
+    transform 0.24s ease;
+}
+
+.combatant.left {
+  left: 5vw;
+  transform: translateX(-24px);
+}
+
+.combatant.right {
+  right: 5vw;
+  border-left: 0;
+  border-right: 5px solid var(--team, #fff);
+  transform: translateX(24px);
+}
+
+.cinema.show .combatant {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.combatant-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 7px;
+}
+
+.combatant-name {
+  font-size: 17px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 1px;
+}
+
+.combatant-hp {
+  font-size: 20px;
+  font-weight: 800;
+  color: #ffd23c;
+  font-variant-numeric: tabular-nums;
+}
+
+.combatant-bar {
+  height: 10px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.combatant-fill {
+  height: 100%;
+  background: var(--team, #fff);
+  border-radius: 5px;
+  transition: width 0.22s ease;
+}

@@ -455,6 +455,100 @@ export class World {
     this.captureBadges.clear();
   }
 
+  /* ---------------------------------------------------------------- *
+   * Battle cutscene
+   * ---------------------------------------------------------------- */
+
+  /**
+   * Frame two tiles for a close, low-angle exchange: the camera drops to the
+   * side of the firing line so both units are in profile, the way a battle
+   * scene reads. The side is chosen to match whichever flank the tactical
+   * camera was already on, so the cut never crosses the line and flips which
+   * army appears on the left.
+   */
+  private battleFraming(a: Point, b: Point): { position: THREE.Vector3; look: THREE.Vector3 } {
+    const from = new THREE.Vector3(this.wx(a.x), 0, this.wz(a.y));
+    const to = new THREE.Vector3(this.wx(b.x), 0, this.wz(b.y));
+
+    const mid = from.clone().add(to).multiplyScalar(0.5);
+    const axis = to.clone().sub(from).setY(0);
+    const separation = axis.length();
+    if (separation < 1e-4) axis.set(0, 0, -1);
+    axis.normalize();
+
+    const side = new THREE.Vector3().crossVectors(axis, new THREE.Vector3(0, 1, 0)).normalize();
+    const current = this.stage.camera.position.clone().sub(mid);
+    if (side.dot(current) < 0) side.negate();
+
+    // Pull back far enough that both combatants fit with room to spare. The
+    // margin is generous on purpose: framed tight, the near unit crops against
+    // the edge of the screen and the shot reads as a mistake.
+    const halfSpan = separation / 2 + 2.2;
+    const vfov = (this.stage.camera.fov * Math.PI) / 180;
+    const tanH = Math.tan(vfov / 2) * this.stage.camera.aspect;
+    const distance = Math.max(7.5, halfSpan / tanH);
+
+    const elevation = 0.52;
+    const position = mid
+      .clone()
+      .addScaledVector(side, Math.cos(elevation) * distance)
+      .addScaledVector(new THREE.Vector3(0, 1, 0), Math.sin(elevation) * distance)
+      // Nudge along the firing line so the shot is not perfectly symmetrical.
+      .addScaledVector(axis, -distance * 0.12);
+
+    return { position, look: mid.clone().setY(0.45) };
+  }
+
+  /**
+   * Run `body` with the camera swung in on the two tiles, then put the camera
+   * back exactly where it was. The caller is responsible for suspending
+   * whatever normally drives the camera.
+   */
+  async cinematic(a: Point, b: Point, body: () => Promise<void>): Promise<void> {
+    const camera = this.stage.camera;
+    // Tactical overlays belong to the tactical camera; a cursor bracket and a
+    // movement range make no sense inside a close-up.
+    const overlayWasVisible = this.overlay.group.visible;
+    this.overlay.group.visible = false;
+    const startPos = camera.position.clone();
+    const startQuat = camera.quaternion.clone();
+
+    const framing = this.battleFraming(a, b);
+    const endQuat = (() => {
+      const probe = camera.clone();
+      probe.position.copy(framing.position);
+      probe.lookAt(framing.look);
+      return probe.quaternion.clone();
+    })();
+
+    await this.run(0.32, (t) => {
+      const k = easeInOut(t);
+      camera.position.lerpVectors(startPos, framing.position, k);
+      camera.quaternion.slerpQuaternions(startQuat, endQuat, k);
+    });
+
+    await body();
+    await this.wait(0.22);
+
+    await this.run(0.3, (t) => {
+      const k = easeInOut(t);
+      camera.position.lerpVectors(framing.position, startPos, k);
+      camera.quaternion.slerpQuaternions(endQuat, startQuat, k);
+    });
+
+    this.overlay.group.visible = overlayWasVisible;
+  }
+
+  /** Turn a unit to face a tile without moving it. */
+  faceTowards(unitId: number, tile: Point): void {
+    const view = this.views.get(unitId);
+    if (view === undefined) return;
+    const dx = this.wx(tile.x) - view.model.position.x;
+    const dz = this.wz(tile.y) - view.model.position.z;
+    if (Math.abs(dx) < 1e-4 && Math.abs(dz) < 1e-4) return;
+    this.turnTo(view, yawTowards(dx, dz));
+  }
+
   /** Route explosion jolts to the camera. */
   setShakeSink(sink: ShakeSink | null): void {
     this.effects.setShakeSink(sink);

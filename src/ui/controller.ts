@@ -27,7 +27,7 @@ import type { MapEntry } from "../core/maps";
 import { key, type PlayerId, type Point } from "../core/types";
 import { CameraRig } from "../render/scene";
 import { TEAMS } from "../render/palette";
-import { World } from "../render/world";
+import { World, type AttackAnimation } from "../render/world";
 import { Hud, type MenuItem } from "./hud";
 import type { Stage } from "../render/scene";
 
@@ -71,6 +71,8 @@ export class Controller {
     private readonly host: HTMLElement,
     private readonly entry: MapEntry,
     private readonly animationSpeed = 1,
+    /** Battle cutscenes; off at high speed so the playtest is not held up. */
+    private readonly cutscenes = true,
   ) {
     this.state = createGame(entry.build(), entry.startUnits);
     this.world = new World(stage, this.state.map);
@@ -538,10 +540,13 @@ export class Controller {
     const defenderOwner = defender.owner;
     const defenderTile: Point = { x: defender.x, y: defender.y };
     const attackerTile: Point = { x: attacker.x, y: attacker.y };
+    // Snapshots: after the rules run, a destroyed unit is gone from the state.
+    const attackerBefore: Unit = { ...attacker };
+    const defenderBefore: Unit = { ...defender };
 
     const result = attack(this.state, attacker, defender);
 
-    await this.world.animateAttack({
+    const shot: AttackAnimation = {
       attackerId,
       attackerType,
       targetId: defenderId,
@@ -550,20 +555,52 @@ export class Controller {
       damage: Math.min(result.damage, 100),
       destroyed: result.defenderDestroyed,
       indirect: isIndirect(attackerType),
-    });
+    };
+    const counter: AttackAnimation | null =
+      result.counter > 0 || result.attackerDestroyed
+        ? {
+            attackerId: defenderId,
+            attackerType: defenderType,
+            targetId: attackerId,
+            targetTile: attackerTile,
+            targetOwner: attackerOwner,
+            damage: Math.min(result.counter, 100),
+            destroyed: result.attackerDestroyed,
+            // Counterattacks are only ever made by adjacent direct-fire units.
+            indirect: false,
+          }
+        : null;
 
-    if (result.counter > 0 || result.attackerDestroyed) {
-      await this.world.animateAttack({
-        attackerId: defenderId,
-        attackerType: defenderType,
-        targetId: attackerId,
-        targetTile: attackerTile,
-        targetOwner: attackerOwner,
-        damage: Math.min(result.counter, 100),
-        destroyed: result.attackerDestroyed,
-        // Counterattacks are only ever made by adjacent direct-fire units.
-        indirect: false,
-      });
+    const sequence = async (): Promise<void> => {
+      await this.world.animateAttack(shot);
+      if (this.cutscenes) {
+        this.hud.updateBattleHp(1, defenderBefore.hp - result.damage);
+      }
+      if (counter !== null) {
+        await this.world.animateAttack(counter);
+        if (this.cutscenes) {
+          this.hud.updateBattleHp(0, attackerBefore.hp - result.counter);
+        }
+      }
+    };
+
+    if (!this.cutscenes) {
+      await sequence();
+      return;
+    }
+
+    // Both sides square up before the camera arrives, so the cut lands on two
+    // units already facing each other rather than on them turning.
+    this.world.faceTowards(attackerId, defenderTile);
+    this.world.faceTowards(defenderId, attackerTile);
+
+    this.hud.showBattle(attackerBefore, defenderBefore);
+    this.rig.suspend();
+    try {
+      await this.world.cinematic(attackerTile, defenderTile, sequence);
+    } finally {
+      this.rig.resume();
+      this.hud.hideBattle();
     }
   }
 
@@ -739,6 +776,8 @@ export class Controller {
     lightCount: () => number;
     focusTile: (x: number, y: number) => void;
     camera: () => { x: number; z: number; zoom: number };
+    advance: (dt: number) => void;
+    rawCamera: () => { x: number; y: number; z: number };
   } {
     return {
       state: () => this.state,
@@ -757,6 +796,12 @@ export class Controller {
       },
       aiProbe: () => void nextAiStep(this.state),
       restart: () => this.restart(),
+      advance: (dt) => this.update(dt),
+      rawCamera: () => ({
+        x: this.stage.camera.position.x,
+        y: this.stage.camera.position.y,
+        z: this.stage.camera.position.z,
+      }),
       camera: () => ({
         x: this.rig.target.x,
         z: this.rig.target.z,
