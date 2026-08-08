@@ -9,6 +9,8 @@ import { Controller } from "./ui/controller";
 import { createGame } from "./core/game";
 import { CameraRig } from "./render/scene";
 import { World, type AttackAnimation } from "./render/world";
+import { SOUNDS, SOUND_IDS, type SoundId } from "./audio/sounds";
+import { scheduleLoop } from "./audio/music";
 import type { PlayerId, UnitId } from "./core/types";
 
 const app = document.getElementById("app")!;
@@ -54,6 +56,47 @@ switch (view) {
 if (import.meta.env.DEV && controller !== null) {
   // Handle for tools/playtest.mjs; never present in a production build.
   (window as unknown as { __aw: unknown }).__aw = controller.debug();
+
+  // Sound cannot be listened to from a headless test, but it can be measured.
+  // Rendering each effect offline gives a real waveform to assert on.
+  (window as unknown as { __audio: unknown }).__audio = {
+    ids: SOUND_IDS,
+    render: async (id: SoundId, seconds = 2) => {
+      const ctx = new OfflineAudioContext(1, Math.ceil(44100 * seconds), 44100);
+      const length = SOUNDS[id](ctx, ctx.destination, 0);
+      const buffer = await ctx.startRendering();
+      const data = buffer.getChannelData(0);
+
+      let peak = 0;
+      let sum = 0;
+      let lastAudible = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = Math.abs(data[i]);
+        if (v > peak) peak = v;
+        sum += data[i] * data[i];
+        if (v > 0.002) lastAudible = i;
+      }
+      return {
+        declared: length,
+        peak,
+        rms: Math.sqrt(sum / data.length),
+        tail: lastAudible / 44100,
+      };
+    },
+    renderMusic: async (seconds = 4) => {
+      const ctx = new OfflineAudioContext(1, Math.ceil(44100 * seconds), 44100);
+      scheduleLoop(ctx, ctx.destination, 0);
+      const buffer = await ctx.startRendering();
+      const data = buffer.getChannelData(0);
+      let peak = 0;
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        peak = Math.max(peak, Math.abs(data[i]));
+        sum += data[i] * data[i];
+      }
+      return { peak, rms: Math.sqrt(sum / data.length) };
+    },
+  };
 }
 
 window.addEventListener("resize", () => {

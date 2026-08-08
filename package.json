@@ -12,7 +12,8 @@
     "test": "tsx tools/rules-test.ts",
     "simulate": "tsx tools/simulate.ts",
     "playtest": "node tools/playtest.mjs",
-    "cutscene": "node tools/cutscene.mjs"
+    "cutscene": "node tools/cutscene.mjs",
+    "audio": "node tools/audio-test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1",

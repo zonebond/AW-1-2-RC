@@ -22,13 +22,16 @@ import {
 import { nextAiStep } from "../ai/ai";
 import { attackableTiles } from "../core/pathfinding";
 import { pathTo } from "../core/pathfinding";
-import { isIndirect } from "../core/units";
 import type { MapEntry } from "../core/maps";
-import { key, type PlayerId, type Point } from "../core/types";
+import { key, type PlayerId, type Point, type UnitId } from "../core/types";
 import { CameraRig } from "../render/scene";
 import { TEAMS } from "../render/palette";
 import { World, type AttackAnimation } from "../render/world";
 import { Hud, type MenuItem } from "./hud";
+import { audio } from "../audio/audio";
+import type { SoundId } from "../audio/sounds";
+import { UNITS, isIndirect } from "../core/units";
+import { chooseWeapon } from "../core/damage";
 import type { Stage } from "../render/scene";
 
 /**
@@ -40,6 +43,45 @@ import type { Stage } from "../render/scene";
 
 /** Pixels of pointer travel before a press counts as a drag, not a click. */
 const DRAG_THRESHOLD = 6;
+
+/** Each move class gets its own note: boots, tracks or tyres. */
+function moveSound(type: UnitId): SoundId {
+  switch (UNITS[type].moveClass) {
+    case "foot":
+    case "boots":
+      return "moveFoot" as const;
+    case "tires":
+      return "moveTire" as const;
+    case "treads":
+      return "moveTread" as const;
+  }
+}
+
+/**
+ * Which weapon report to play when this unit opens fire. It depends on the
+ * *target*, not just the shooter: a mech answers a tank with its bazooka and
+ * infantry with its machine gun, and those are two completely different
+ * noises. Ammo is not consulted — the report we want is the one the shot the
+ * player is watching actually used, and the engine has already spent it.
+ */
+function fireSound(attacker: UnitId, defender: UnitId): SoundId {
+  const slot = chooseWeapon(attacker, defender, 1)?.slot ?? "secondary";
+  if (slot === "secondary") return "machineGun" as const;
+
+  switch (attacker) {
+    case "rockets":
+      return "rocket" as const;
+    case "mech":
+      return "rocket" as const;
+    // Autocannons, not artillery: a fast stutter rather than a single boom.
+    case "antiair":
+    case "recon":
+    case "infantry":
+      return "machineGun" as const;
+    default:
+      return "cannon" as const;
+  }
+}
 
 function teamHex(player: PlayerId): string {
   return `#${TEAMS[player].light.toString(16).padStart(6, "0")}`;
@@ -146,6 +188,8 @@ export class Controller {
     });
 
     canvas.addEventListener("pointerdown", (event) => {
+      // Browsers hold audio until the user interacts with the page.
+      audio.unlock();
       if (event.button === 2) {
         void this.cancel();
         return;
@@ -198,7 +242,18 @@ export class Controller {
     );
 
     window.addEventListener("keydown", (event) => {
+      audio.unlock();
       switch (event.key) {
+        case "m":
+        case "M":
+          audio.setMuted(!audio.muted);
+          this.hud.showAudioState(audio.muted, audio.musicEnabled);
+          return;
+        case "n":
+        case "N":
+          audio.setMusic(!audio.musicEnabled);
+          this.hud.showAudioState(audio.muted, audio.musicEnabled);
+          return;
         case "Escape":
           void this.cancel();
           return;
@@ -238,6 +293,9 @@ export class Controller {
   }
 
   private onHover(tile: Point | null): void {
+    const changed =
+      tile !== null && (this.hovered === null || this.hovered.x !== tile.x || this.hovered.y !== tile.y);
+    if (changed) audio.play("cursor", { minGap: 0.05 });
     this.hovered = tile;
     this.world.overlay.setCursor(tile);
     this.hud.showTerrain(this.state, tile);
@@ -353,6 +411,7 @@ export class Controller {
   }
 
   private select(unit: Unit): void {
+    audio.play("select");
     const nodes = movementRange(this.state, unit);
     const landing: Point[] = [];
     for (const node of nodes.values()) {
@@ -393,6 +452,7 @@ export class Controller {
     this.mode = { kind: "busy" };
     this.world.overlay.clear();
     this.world.overlay.setCursor(null);
+    if (path.length > 1) audio.play(moveSound(unit.type), { minGap: 0 });
     await this.world.animateMove(unit.id, path);
 
     this.world.overlay.setSelected(at);
@@ -400,6 +460,7 @@ export class Controller {
   }
 
   private openActionMenu(unit: Unit, at: Point, origin: Point, path: Point[]): void {
+    audio.play("menu");
     const moved = at.x !== origin.x || at.y !== origin.y;
     const actions = actionsAt(this.state, unit, at, moved);
     const items: MenuItem[] = [];
@@ -453,11 +514,13 @@ export class Controller {
   }
 
   private openBuildMenu(tile: Point): void {
+    audio.play("menu");
     this.mode = { kind: "building", at: tile };
     this.hud.showBuild(
       this.state.players[0].funds,
       (type) => {
         buildUnit(this.state, tile.x, tile.y, type);
+        audio.play("build");
         this.hud.hideBuild();
         this.mode = { kind: "idle" };
         this.world.sync(this.state);
@@ -490,7 +553,10 @@ export class Controller {
     this.mode = { kind: "busy" };
     this.hud.hideMenu();
     const unit = this.commitMove(unitId, path);
-    if (unit !== undefined) capture(this.state, unit);
+    if (unit !== undefined) {
+      const captured = capture(this.state, unit);
+      audio.play(captured ? "captureDone" : "captureTick");
+    }
     this.afterAction();
   }
 
@@ -572,12 +638,16 @@ export class Controller {
         : null;
 
     const sequence = async (): Promise<void> => {
+      audio.play(fireSound(attackerType, defenderType), { minGap: 0 });
       await this.world.animateAttack(shot);
+      audio.play(result.defenderDestroyed ? "destroy" : "impact", { minGap: 0 });
       if (this.cutscenes) {
         this.hud.updateBattleHp(1, defenderBefore.hp - result.damage);
       }
       if (counter !== null) {
+        audio.play(fireSound(defenderType, attackerType), { minGap: 0 });
         await this.world.animateAttack(counter);
+        audio.play(result.attackerDestroyed ? "destroy" : "impact", { minGap: 0 });
         if (this.cutscenes) {
           this.hud.updateBattleHp(0, attackerBefore.hp - result.counter);
         }
@@ -613,6 +683,7 @@ export class Controller {
 
     if (this.state.winner !== null) {
       this.mode = { kind: "over" };
+      audio.play(this.state.winner === 0 ? "victory" : "defeat");
       this.hud.showResult(this.state);
       return;
     }
@@ -621,6 +692,7 @@ export class Controller {
 
   /** Back out of whatever is open, walking a previewed move back if needed. */
   private async cancel(): Promise<void> {
+    if (this.mode.kind !== "idle") audio.play("cancel");
     this.hud.hideMenu();
     this.hud.hideBuild();
     this.hud.hideForecast();
@@ -675,6 +747,7 @@ export class Controller {
     this.world.sync(this.state);
     this.hud.refresh(this.state);
 
+    audio.play("turnEnemy");
     await this.hud.flashBanner("蓝月军 回合", teamHex(1));
     await this.runAiTurn();
   }
@@ -687,6 +760,7 @@ export class Controller {
 
       if (step.kind === "build") {
         buildUnit(this.state, step.x, step.y, step.type);
+        audio.play("build");
         this.world.sync(this.state);
         this.hud.refresh(this.state);
         await this.world.wait(0.06);
@@ -705,6 +779,7 @@ export class Controller {
         );
       }
 
+      if (step.order.path.length > 1) audio.play(moveSound(unit.type), { minGap: 0 });
       await this.world.animateMove(unit.id, step.order.path);
       moveUnit(this.state, unit, step.order.path);
 
@@ -719,7 +794,7 @@ export class Controller {
           break;
         }
         case "capture":
-          capture(this.state, unit);
+          audio.play(capture(this.state, unit) ? "captureDone" : "captureTick");
           break;
         case "wait":
           finishAction(this.state, unit);
@@ -735,6 +810,7 @@ export class Controller {
       this.mode = { kind: "over" };
       this.world.sync(this.state);
       this.hud.refresh(this.state);
+      audio.play(this.state.winner === 0 ? "victory" : "defeat");
       this.hud.showResult(this.state);
       return;
     }
@@ -745,6 +821,7 @@ export class Controller {
     // The camera followed the AI around; hand the player back a view of their
     // own army rather than wherever the last enemy order happened to end.
     this.openingView();
+    audio.play("turnPlayer");
     await this.hud.flashBanner("红星军 回合", teamHex(0));
 
     this.mode = this.state.winner === null ? { kind: "idle" } : { kind: "over" };

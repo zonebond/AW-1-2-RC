@@ -61,6 +61,8 @@ export class Hud {
   private readonly menu = element("div", "panel menu hidden");
   private readonly build = element("div", "build hidden");
   private readonly cinema = element("div", "cinema hidden");
+  private readonly audioToast = element("div", "panel toast hidden");
+  private toastTimer = 0;
   private readonly cinemaCards: [HTMLElement, HTMLElement] = [
     element("div", "combatant left"),
     element("div", "combatant right"),
@@ -93,7 +95,8 @@ export class Hud {
     const hint = element("div", "panel hint");
     hint.innerHTML =
       "<kbd>左键</kbd>选择/确认　<kbd>拖动</kbd>或<kbd>WASD</kbd>平移　" +
-      "<kbd>空格</kbd>回到我方　<kbd>右键</kbd>取消　<kbd>滚轮</kbd>缩放　<kbd>E</kbd>结束回合";
+      "<kbd>空格</kbd>回到我方　<kbd>右键</kbd>取消　<kbd>滚轮</kbd>缩放　" +
+      "<kbd>M</kbd>静音　<kbd>E</kbd>结束回合";
 
     this.endTurnButton.addEventListener("click", () => this.onEndTurn());
 
@@ -104,6 +107,7 @@ export class Hud {
       this.menu,
       this.build,
       this.cinema,
+      this.audioToast,
       this.forecastPanel,
       this.banner,
       this.endTurnButton,
@@ -472,6 +476,18 @@ export class Hud {
     );
     node.style.left = `${x}px`;
     node.style.top = `${y}px`;
+  }
+
+  /** Brief confirmation when the mute or music keys are pressed. */
+  showAudioState(muted: boolean, music: boolean): void {
+    this.audioToast.textContent = muted
+      ? "🔇 已静音（M 恢复）"
+      : music
+        ? "🔊 音效开 · 音乐开（M 静音 / N 关音乐）"
+        : "🔊 音效开 · 音乐关（N 开音乐）";
+    this.audioToast.classList.remove("hidden");
+    window.clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => this.audioToast.classList.add("hidden"), 1800);
   }
 
   /* ---------------------------------------------------------------- *

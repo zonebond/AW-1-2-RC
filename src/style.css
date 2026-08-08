@@ -680,3 +680,15 @@ body {
   border-radius: 5px;
   transition: width 0.22s ease;
 }
+
+/* ---- transient confirmation toast ---- */
+
+.toast {
+  left: 50%;
+  top: 76px;
+  transform: translateX(-50%);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 18px;
+  white-space: nowrap;
+}
