@@ -61,6 +61,7 @@ const state = () =>
       day: s.day,
       turn: s.turn,
       winner: s.winner,
+      fog: s.fog,
       funds: [s.players[0].funds, s.players[1].funds],
       owned: [
         s.map.tiles.filter((t) => t.owner === 0).length,
