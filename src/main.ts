@@ -49,6 +49,7 @@ switch (view) {
       mapById(params.get("map") ?? MAPS[0].id),
       Number(params.get("speed") ?? 1),
       params.get("cutscene") !== "0" && Number(params.get("speed") ?? 1) < 4,
+      params.get("fog") === "1",
     );
     break;
 }

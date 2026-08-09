@@ -7,9 +7,10 @@ import {
 } from "../core/game";
 import { attackableTiles, buildOccupancy, inRange, pathTo, reachable } from "../core/pathfinding";
 import { displayHp } from "../core/damage";
-import { tileAt } from "../core/map";
+import { findHq, tileAt } from "../core/map";
 import { TERRAIN } from "../core/terrain";
 import { UNITS, hasWeapon, isIndirect } from "../core/units";
+import { visibleUnits } from "../core/fog";
 import { key, type Point, type PlayerId, type UnitId } from "../core/types";
 
 /**
@@ -44,12 +45,20 @@ interface ScoredOrder {
   score: number;
 }
 
-/** Roughly how much damage output an enemy could bring to bear on a tile. */
-function threatMap(state: GameState, forOwner: PlayerId): Map<number, number> {
+/**
+ * Roughly how much damage output an enemy could bring to bear on a tile.
+ * Built from `known` rather than the true unit list, so under fog the AI is
+ * blind to exactly the same ambushes the player is.
+ */
+function threatMap(
+  state: GameState,
+  forOwner: PlayerId,
+  known: readonly Unit[],
+): Map<number, number> {
   const threat = new Map<number, number>();
-  const occupancy = buildOccupancy(state.units);
+  const occupancy = buildOccupancy(known);
 
-  for (const enemy of state.units) {
+  for (const enemy of known) {
     if (enemy.owner === forOwner) continue;
     if (!hasWeapon(enemy.type)) continue;
 
@@ -71,7 +80,7 @@ function threatMap(state: GameState, forOwner: PlayerId): Map<number, number> {
 }
 
 /** What this unit should walk towards when it has nothing better to do. */
-function pickObjective(state: GameState, unit: Unit): Point | null {
+function pickObjective(state: GameState, unit: Unit, known: readonly Unit[]): Point | null {
   const isFoot = UNITS[unit.type].isFoot;
 
   if (isFoot) {
@@ -95,7 +104,7 @@ function pickObjective(state: GameState, unit: Unit): Point | null {
 
   let closest: Unit | null = null;
   let closestDistance = Infinity;
-  for (const enemy of state.units) {
+  for (const enemy of known) {
     if (enemy.owner === unit.owner) continue;
     const distance = Math.abs(enemy.x - unit.x) + Math.abs(enemy.y - unit.y);
     if (distance < closestDistance) {
@@ -103,7 +112,13 @@ function pickObjective(state: GameState, unit: Unit): Point | null {
       closest = enemy;
     }
   }
-  return closest === null ? null : { x: closest.x, y: closest.y };
+  if (closest !== null) return { x: closest.x, y: closest.y };
+
+  // Nothing in sight. Under fog that is the normal opening state, and a unit
+  // with no objective would simply never move — so fall back to the one
+  // target that is always on the map and always worth walking towards.
+  const enemyHq = findHq(state.map, unit.owner === 0 ? 1 : 0);
+  return enemyHq === null ? null : { x: enemyHq.x, y: enemyHq.y };
 }
 
 function propertyValue(state: GameState, x: number, y: number): number {
@@ -117,6 +132,7 @@ function evaluate(
   state: GameState,
   unit: Unit,
   threat: Map<number, number>,
+  known: readonly Unit[],
 ): ScoredOrder | null {
   const nodes = movementRange(state, unit);
   const options: ScoredOrder[] = [];
@@ -133,7 +149,7 @@ function evaluate(
 
     if (!(moved && isIndirect(unit.type))) {
       const probe: Unit = { ...unit, x: at.x, y: at.y };
-      for (const enemy of state.units) {
+      for (const enemy of known) {
         if (enemy.owner === unit.owner) continue;
         if (!inRange(unit.type, at, enemy)) continue;
         const shot = forecast(state, probe, enemy);
@@ -168,7 +184,7 @@ function evaluate(
     }
   }
 
-  const objective = pickObjective(state, unit);
+  const objective = pickObjective(state, unit, known);
   if (objective !== null) {
     let bestNode: { x: number; y: number } | null = null;
     let bestScore = -Infinity;
@@ -262,11 +278,12 @@ export function nextAiStep(state: GameState): AiStep {
 
   const idle = state.units.filter((u) => u.owner === state.turn && !u.done);
   if (idle.length > 0) {
-    const threat = threatMap(state, state.turn);
+    const known = visibleUnits(state, state.turn);
+    const threat = threatMap(state, state.turn, known);
 
     let best: ScoredOrder | null = null;
     for (const unit of idle) {
-      const candidate = evaluate(state, unit, threat);
+      const candidate = evaluate(state, unit, threat, known);
       if (candidate === null) continue;
       if (best === null || candidate.score > best.score) best = candidate;
     }

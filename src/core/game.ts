@@ -9,6 +9,7 @@ import {
   reachable,
   type ReachableNode,
 } from "./pathfinding";
+import { canSeeUnit, visibleUnits } from "./fog";
 import { NEUTRAL, key, type PlayerId, type Point, type UnitId } from "./types";
 
 export interface Unit {
@@ -43,6 +44,8 @@ export interface GameState {
   winner: PlayerId | null;
   /** Why the game ended, for the result banner. */
   endReason: "hq" | "rout" | null;
+  /** Fog of war. Terrain stays known either way; only units are hidden. */
+  fog: boolean;
   nextUnitId: number;
   log: string[];
   /** Injected so tests and the AI can run with a fixed sequence. */
@@ -59,9 +62,9 @@ export interface StartUnit {
 export function createGame(
   map: GameMap,
   startUnits: readonly StartUnit[],
-  options: { aiOpponent?: boolean; random?: () => number } = {},
+  options: { aiOpponent?: boolean; random?: () => number; fog?: boolean } = {},
 ): GameState {
-  const { aiOpponent = true, random = Math.random } = options;
+  const { aiOpponent = true, random = Math.random, fog = false } = options;
 
   const state: GameState = {
     map,
@@ -74,6 +77,7 @@ export function createGame(
     day: 1,
     winner: null,
     endReason: null,
+    fog,
     nextUnitId: 1,
     log: [],
     random,
@@ -133,8 +137,13 @@ export function propertiesOf(state: GameState, player: PlayerId): number {
  * Movement
  * ------------------------------------------------------------------ */
 
+/**
+ * Where this unit could go. Under fog the range is computed against the units
+ * its owner can actually see, so a route may be planned straight through a
+ * hidden enemy — that plan is what `resolveMovePath` later cuts short.
+ */
 export function movementRange(state: GameState, unit: Unit): Map<number, ReachableNode> {
-  return reachable(state.map, unit, buildOccupancy(state.units));
+  return reachable(state.map, unit, buildOccupancy(visibleUnits(state, unit.owner)));
 }
 
 /** Tiles the unit may actually finish its move on. */
@@ -251,6 +260,8 @@ function canCounter(state: GameState, attacker: Unit, defender: Unit): boolean {
 export function canAttack(state: GameState, attacker: Unit, defender: Unit): boolean {
   if (attacker.owner === defender.owner) return false;
   if (!inRange(attacker.type, attacker, defender)) return false;
+  // You cannot shoot what you have not found.
+  if (!canSeeUnit(state, attacker.owner, defender)) return false;
   return forecast(state, attacker, defender) !== null;
 }
 
@@ -559,7 +570,7 @@ export function actionsAt(state: GameState, unit: Unit, at: Point, moved: boolea
   const blockedByMove = moved && isIndirect(unit.type);
   const targets = blockedByMove
     ? []
-    : state.units.filter(
+    : visibleUnits(state, unit.owner).filter(
         (other) =>
           other.owner !== unit.owner &&
           other.id !== unit.id &&

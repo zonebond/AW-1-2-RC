@@ -70,12 +70,14 @@ export class Hud {
   private readonly forecastPanel = element("div", "panel forecast hidden");
   private readonly banner = element("div", "banner");
   private readonly endTurnButton = element("button", "end-turn", "结束回合");
+  private readonly fogButton = element("button", "fog-toggle", "迷雾：关");
   private resultScreen: HTMLElement | null = null;
 
   constructor(
     parent: HTMLElement,
     private readonly onEndTurn: () => void,
     private readonly onRestart: () => void,
+    private readonly onToggleFog: () => void = () => {},
   ) {
     this.root.id = "hud";
 
@@ -87,6 +89,10 @@ export class Hud {
       this.treasuries.push(box);
       topbar.append(box);
     }
+    // Fog changes the shape of the whole match, so it cannot be flipped
+    // mid-game — the button starts a fresh one.
+    this.fogButton.addEventListener("click", () => this.onToggleFog());
+    topbar.append(this.fogButton);
 
     const bars = element("div", "cinema-bars");
     bars.append(element("div", "cinema-bar top"), element("div", "cinema-bar bottom"));
@@ -128,6 +134,9 @@ export class Hud {
       box.querySelector(".amount")!.textContent =
         `$${state.players[id].funds.toLocaleString()} · ${propertiesOf(state, id)}地`;
     }
+
+    this.fogButton.textContent = state.fog ? "迷雾：开" : "迷雾：关";
+    this.fogButton.classList.toggle("on", state.fog);
 
     const humanTurn = state.turn === 0 && state.winner === null;
     this.endTurnButton.disabled = !humanTurn;
@@ -478,16 +487,23 @@ export class Hud {
     node.style.top = `${y}px`;
   }
 
-  /** Brief confirmation when the mute or music keys are pressed. */
-  showAudioState(muted: boolean, music: boolean): void {
-    this.audioToast.textContent = muted
-      ? "🔇 已静音（M 恢复）"
-      : music
-        ? "🔊 音效开 · 音乐开（M 静音 / N 关音乐）"
-        : "🔊 音效开 · 音乐关（N 开音乐）";
+  /** A line of text that appears near the top and fades itself out. */
+  showToast(text: string, holdMs = 1800): void {
+    this.audioToast.textContent = text;
     this.audioToast.classList.remove("hidden");
     window.clearTimeout(this.toastTimer);
-    this.toastTimer = window.setTimeout(() => this.audioToast.classList.add("hidden"), 1800);
+    this.toastTimer = window.setTimeout(() => this.audioToast.classList.add("hidden"), holdMs);
+  }
+
+  /** Brief confirmation when the mute or music keys are pressed. */
+  showAudioState(muted: boolean, music: boolean): void {
+    this.showToast(
+      muted
+        ? "🔇 已静音（M 恢复）"
+        : music
+          ? "🔊 音效开 · 音乐开（M 静音 / N 关音乐）"
+          : "🔊 音效开 · 音乐关（N 开音乐）",
+    );
   }
 
   /* ---------------------------------------------------------------- *

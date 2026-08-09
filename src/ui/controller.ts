@@ -32,6 +32,7 @@ import { audio } from "../audio/audio";
 import type { SoundId } from "../audio/sounds";
 import { UNITS, isIndirect } from "../core/units";
 import { chooseWeapon } from "../core/damage";
+import { canSeeUnit, resolveMovePath, visibleTiles } from "../core/fog";
 import type { Stage } from "../render/scene";
 
 /**
@@ -107,6 +108,8 @@ export class Controller {
   /** Which button is being held for a possible camera drag, if any. */
   private dragButton: number | null = null;
   private dragDistance = 0;
+  /** Survives a restart, so toggling fog and replaying keeps the setting. */
+  private fog: boolean;
 
   constructor(
     private readonly stage: Stage,
@@ -115,8 +118,10 @@ export class Controller {
     private readonly animationSpeed = 1,
     /** Battle cutscenes; off at high speed so the playtest is not held up. */
     private readonly cutscenes = true,
+    fog = false,
   ) {
-    this.state = createGame(entry.build(), entry.startUnits);
+    this.fog = fog;
+    this.state = createGame(entry.build(), entry.startUnits, { fog });
     this.world = new World(stage, this.state.map);
     this.world.speed = animationSpeed;
     this.rig = new CameraRig(stage, this.state.map.width, this.state.map.height);
@@ -125,9 +130,14 @@ export class Controller {
       host,
       () => void this.endHumanTurn(),
       () => this.restart(),
+      () => {
+        this.fog = !this.fog;
+        this.restart();
+        this.hud.showToast(this.fog ? "🌫 战争迷雾已开启 · 新的一局" : "☀️ 战争迷雾已关闭 · 新的一局", 2400);
+      },
     );
 
-    this.world.sync(this.state);
+    this.syncWorld();
     this.hud.refresh(this.state);
     this.openingView();
     this.bindInput();
@@ -153,14 +163,47 @@ export class Controller {
   private restart(): void {
     this.hud.clearResult();
     this.world.dispose();
-    this.state = createGame(this.entry.build(), this.entry.startUnits);
+    this.state = createGame(this.entry.build(), this.entry.startUnits, { fog: this.fog });
     this.world = new World(this.stage, this.state.map);
     this.world.speed = this.animationSpeed;
     this.world.setShakeSink(this.rig);
-    this.world.sync(this.state);
+    this.syncWorld();
     this.hud.refresh(this.state);
     this.openingView();
     this.mode = { kind: "idle" };
+  }
+
+  /**
+   * Push the state into the scene. Everything fog-related happens here and
+   * nowhere else: the player's vision is recomputed, enemy models outside it
+   * are hidden, and the unseen ground is darkened. Routing every sync through
+   * one method is what stops a new call site from quietly leaking the enemy
+   * position.
+   */
+  private syncWorld(): void {
+    if (!this.state.fog) {
+      this.world.setVisibleUnits(null);
+      this.world.overlay.setFog([]);
+      this.world.sync(this.state);
+      return;
+    }
+
+    const lit = visibleTiles(this.state, 0);
+    const ids = new Set<number>();
+    for (const unit of this.state.units) {
+      if (canSeeUnit(this.state, 0, unit, lit)) ids.add(unit.id);
+    }
+
+    const hidden: Point[] = [];
+    for (let y = 0; y < this.state.map.height; y++) {
+      for (let x = 0; x < this.state.map.width; x++) {
+        if (!lit.has(key(x, y))) hidden.push({ x, y });
+      }
+    }
+
+    this.world.setVisibleUnits(ids);
+    this.world.overlay.setFog(hidden);
+    this.world.sync(this.state);
   }
 
   /* ---------------------------------------------------------------- *
@@ -331,7 +374,11 @@ export class Controller {
       return;
     }
 
-    this.hud.showUnit(unitAt(this.state, tile.x, tile.y) ?? null);
+    // Only what the player can actually see — otherwise the info panel would
+    // happily read out the stats of a unit hidden in the fog.
+    const under = unitAt(this.state, tile.x, tile.y);
+    const known = under !== undefined && canSeeUnit(this.state, 0, under) ? under : null;
+    this.hud.showUnit(known);
   }
 
   /* ---------------------------------------------------------------- *
@@ -447,13 +494,30 @@ export class Controller {
   private async previewMove(unit: Unit, path: Point[]): Promise<void> {
     if (path.length === 0) return;
     const origin: Point = { x: unit.x, y: unit.y };
-    const at = path[path.length - 1];
+
+    // Under fog the plan may run through a tile the player believes is empty.
+    // The walk stops where the truth is discovered.
+    const walked = resolveMovePath(this.state, unit, path);
+    const ambushed = walked.length < path.length;
+    const at = walked[walked.length - 1];
 
     this.mode = { kind: "busy" };
     this.world.overlay.clear();
     this.world.overlay.setCursor(null);
-    if (path.length > 1) audio.play(moveSound(unit.type), { minGap: 0 });
-    await this.world.animateMove(unit.id, path);
+    if (walked.length > 1) audio.play(moveSound(unit.type), { minGap: 0 });
+    await this.world.animateMove(unit.id, walked);
+
+    if (ambushed) {
+      // Blundering into a hidden unit costs the turn: the unit halts where it
+      // stands and gets no action menu. Committing the move here is what makes
+      // the discovery stick.
+      moveUnit(this.state, unit, walked);
+      finishAction(this.state, unit);
+      audio.play("cancel");
+      this.hud.showToast("⚠️ 遭遇伏击，部队就地停下", 2200);
+      this.afterAction();
+      return;
+    }
 
     this.world.overlay.setSelected(at);
     this.openActionMenu(unit, at, origin, path);
@@ -523,7 +587,7 @@ export class Controller {
         audio.play("build");
         this.hud.hideBuild();
         this.mode = { kind: "idle" };
-        this.world.sync(this.state);
+        this.syncWorld();
         this.hud.refresh(this.state);
       },
       () => void this.cancel(),
@@ -675,7 +739,7 @@ export class Controller {
   }
 
   private afterAction(): void {
-    this.world.sync(this.state);
+    this.syncWorld();
     this.hud.refresh(this.state);
     this.world.overlay.clear();
     this.world.overlay.setCursor(this.hovered);
@@ -702,7 +766,7 @@ export class Controller {
         const { unitId, origin, path } = this.mode;
         this.mode = { kind: "busy" };
         if (path.length > 1) await this.world.animateMove(unitId, [...path].reverse());
-        this.world.sync(this.state);
+        this.syncWorld();
         void origin;
         this.mode = { kind: "idle" };
         const unit = unitById(this.state, unitId);
@@ -728,7 +792,7 @@ export class Controller {
     this.mode = { kind: "idle" };
     this.world.overlay.clear();
     this.world.overlay.setCursor(this.hovered);
-    this.world.sync(this.state);
+    this.syncWorld();
   }
 
   /* ---------------------------------------------------------------- *
@@ -744,7 +808,7 @@ export class Controller {
     this.mode = { kind: "busy" };
 
     endTurn(this.state);
-    this.world.sync(this.state);
+    this.syncWorld();
     this.hud.refresh(this.state);
 
     audio.play("turnEnemy");
@@ -761,7 +825,7 @@ export class Controller {
       if (step.kind === "build") {
         buildUnit(this.state, step.x, step.y, step.type);
         audio.play("build");
-        this.world.sync(this.state);
+        this.syncWorld();
         this.hud.refresh(this.state);
         await this.world.wait(0.06);
         continue;
@@ -779,9 +843,22 @@ export class Controller {
         );
       }
 
-      if (step.order.path.length > 1) audio.play(moveSound(unit.type), { minGap: 0 });
-      await this.world.animateMove(unit.id, step.order.path);
-      moveUnit(this.state, unit, step.order.path);
+      // The AI walks into ambushes on exactly the same terms as the player:
+      // it planned this route against what it could see, not against the truth.
+      const walked = resolveMovePath(this.state, unit, step.order.path);
+      const ambushed = walked.length < step.order.path.length;
+
+      if (walked.length > 1) audio.play(moveSound(unit.type), { minGap: 0 });
+      await this.world.animateMove(unit.id, walked);
+      moveUnit(this.state, unit, walked);
+
+      if (ambushed) {
+        finishAction(this.state, unit);
+        this.syncWorld();
+        this.hud.refresh(this.state);
+        await this.world.wait(0.05);
+        continue;
+      }
 
       switch (step.order.then.kind) {
         case "attack": {
@@ -801,14 +878,14 @@ export class Controller {
           break;
       }
 
-      this.world.sync(this.state);
+      this.syncWorld();
       this.hud.refresh(this.state);
       await this.world.wait(0.05);
     }
 
     if (this.state.winner !== null) {
       this.mode = { kind: "over" };
-      this.world.sync(this.state);
+      this.syncWorld();
       this.hud.refresh(this.state);
       audio.play(this.state.winner === 0 ? "victory" : "defeat");
       this.hud.showResult(this.state);
@@ -816,7 +893,7 @@ export class Controller {
     }
 
     endTurn(this.state);
-    this.world.sync(this.state);
+    this.syncWorld();
     this.hud.refresh(this.state);
     // The camera followed the AI around; hand the player back a view of their
     // own army rather than wherever the last enemy order happened to end.
@@ -855,6 +932,9 @@ export class Controller {
     camera: () => { x: number; z: number; zoom: number };
     advance: (dt: number) => void;
     rawCamera: () => { x: number; y: number; z: number };
+    setFog: (on: boolean) => void;
+    visibleUnitIds: () => number[];
+    drawnUnits: () => number;
   } {
     return {
       state: () => this.state,
@@ -872,6 +952,18 @@ export class Controller {
         return out;
       },
       aiProbe: () => void nextAiStep(this.state),
+      // Restarts the match, exactly as the button does.
+      setFog: (on: boolean) => {
+        this.fog = on;
+        this.restart();
+      },
+      drawnUnits: () => this.world.drawnUnitCount(),
+      visibleUnitIds: () => {
+        const lit = visibleTiles(this.state, 0);
+        return this.state.units
+          .filter((u) => canSeeUnit(this.state, 0, u, lit))
+          .map((u) => u.id);
+      },
       restart: () => this.restart(),
       advance: (dt) => this.update(dt),
       rawCamera: () => ({

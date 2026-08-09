@@ -72,6 +72,7 @@ export class World {
   private readonly unitLayer = new THREE.Group();
   private readonly effectLayer = new THREE.Group();
   private readonly views = new Map<number, UnitView>();
+  private visibleIds: Set<number> | null = null;
   private readonly tileMeshes = new Map<number, THREE.Group>();
   private readonly tileOwners = new Map<number, Owner>();
   private readonly captureBadges = new Map<number, THREE.Sprite>();
@@ -136,6 +137,22 @@ export class World {
    * State synchronisation
    * ---------------------------------------------------------------- */
 
+  /**
+   * Ids the viewing player is allowed to see, or null for no fog. Models of
+   * everything else stay in the scene but are not drawn, so an ambush is
+   * hidden without tearing down and rebuilding its view every turn.
+   */
+  setVisibleUnits(ids: Set<number> | null): void {
+    this.visibleIds = ids;
+  }
+
+  /** How many unit models are actually being drawn. Used by the fog tests. */
+  drawnUnitCount(): number {
+    let count = 0;
+    for (const view of this.views.values()) if (view.model.visible) count++;
+    return count;
+  }
+
   /** Add, remove and reposition models so the scene matches the state. */
   sync(state: GameState): void {
     const seen = new Set<number>();
@@ -153,6 +170,7 @@ export class World {
       // flag from their own turn, and showing them greyed reads as disabled.
       this.setDone(view, unit.done && unit.owner === state.turn);
       this.refreshHp(view, unit);
+      view.model.visible = this.visibleIds === null || this.visibleIds.has(unit.id);
     }
 
     for (const [id, view] of this.views) {

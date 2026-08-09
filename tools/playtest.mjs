@@ -549,6 +549,78 @@ await shot("14-restarted");
 const lights = await page.evaluate(() => window.__aw.lightCount());
 check("重开后灯光仍在场景中", lights >= 4, `灯光数=${lights}`);
 
+/* ------------------------------------------------------------------ *
+ * 11. Fog of war
+ * ------------------------------------------------------------------ */
+
+console.log("\n[11] 战争迷雾");
+
+await page.evaluate(() => window.__aw.setFog(true));
+await page.waitForTimeout(1200);
+
+s = await state();
+check("迷雾已开启", s.fog === true);
+check("按钮显示迷雾开", (await page.locator(".fog-toggle").textContent()).includes("开"));
+
+const fogView = await page.evaluate(() => {
+  const s = window.__aw.state();
+  const visible = window.__aw.visibleUnitIds();
+  return {
+    total: s.units.length,
+    enemies: s.units.filter((u) => u.owner === 1).length,
+    visibleEnemies: visible
+      .map((id) => s.units.find((u) => u.id === id))
+      .filter((u) => u !== undefined && u.owner === 1).length,
+    visibleOwn: visible
+      .map((id) => s.units.find((u) => u.id === id))
+      .filter((u) => u !== undefined && u.owner === 0).length,
+    own: s.units.filter((u) => u.owner === 0).length,
+    drawn: window.__aw.drawnUnits(),
+  };
+});
+
+check("开局看不到任何敌军", fogView.visibleEnemies === 0, JSON.stringify(fogView));
+check("自己的部队全部可见", fogView.visibleOwn === fogView.own, JSON.stringify(fogView));
+// The render layer must agree with the rules layer, or the fog is only
+// notional and the enemy is still sitting there on screen.
+check(
+  "画面上只画出了看得见的单位",
+  fogView.drawn === fogView.visibleOwn,
+  `drawn=${fogView.drawn} 期望=${fogView.visibleOwn}`,
+);
+await shot("15-fog-on");
+
+// Hovering an enemy tile must not fill in the unit panel.
+const enemyTile = await page.evaluate(() => {
+  const s = window.__aw.state();
+  const e = s.units.find((u) => u.owner === 1);
+  return { x: e.x, y: e.y };
+});
+await page.evaluate(([tx, ty]) => window.__aw.focusTile(tx, ty), [enemyTile.x, enemyTile.y]);
+const enemyPoint = await page.evaluate(
+  ([tx, ty]) => window.__aw.project(tx, ty),
+  [enemyTile.x, enemyTile.y],
+);
+await page.mouse.move(enemyPoint.x, enemyPoint.y);
+await page.waitForTimeout(200);
+const panelHidden = await page.evaluate(
+  () => document.querySelector(".info-unit")?.classList.contains("hidden") ?? true,
+);
+check("悬停迷雾中的敌人不显示单位信息", panelHidden);
+
+// Turning fog back off must restore full visibility.
+await page.evaluate(() => window.__aw.setFog(false));
+await page.waitForTimeout(1200);
+const clear = await page.evaluate(() => ({
+  fog: window.__aw.state().fog,
+  total: window.__aw.state().units.length,
+  visible: window.__aw.visibleUnitIds().length,
+  drawn: window.__aw.drawnUnits(),
+}));
+check("关闭迷雾后恢复全图可见", clear.fog === false && clear.visible === clear.total, JSON.stringify(clear));
+check("关闭迷雾后所有单位都被绘制", clear.drawn === clear.total, JSON.stringify(clear));
+await shot("16-fog-off");
+
 /* ------------------------------------------------------------------ */
 
 console.log("");

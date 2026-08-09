@@ -235,6 +235,7 @@ function pathGeometry(
 export class Overlay {
   readonly group = new THREE.Group();
 
+  private readonly fogPool: QuadPool;
   private readonly movePool: QuadPool;
   private readonly attackPool: QuadPool;
   private readonly targetPool: QuadPool;
@@ -250,6 +251,12 @@ export class Overlay {
   private elapsed = 0;
 
   constructor(private readonly map: GameMap) {
+    // Created first so it is added to the group first and the movement and
+    // threat washes draw on top of it rather than under it. Full tile size,
+    // with no gap, so unseen ground reads as one continuous dark region
+    // instead of a grid of separate dark squares.
+    this.fogPool = new QuadPool(this.group, 1, 0x0a1226, 0.52);
+
     this.movePool = new QuadPool(this.group, 0.96, 0x2f8ff0, 0.55, this.stripes);
     this.attackPool = new QuadPool(this.group, 0.96, 0xe11040, 0.52, this.threatStripes);
     this.targetPool = new QuadPool(this.group, 0.96, 0xff2d2d, 0.66);
@@ -300,6 +307,17 @@ export class Overlay {
 
   private wz(y: number): number {
     return worldZ(this.map, y);
+  }
+
+  /**
+   * Tiles outside the player's vision. Only the ground is darkened — terrain
+   * itself is never hidden, because in this series you always know the shape
+   * of the map and only lose track of what is standing on it.
+   */
+  setFog(hidden: readonly Point[]): void {
+    this.fogPool.begin();
+    for (const p of hidden) this.fogPool.place(this.wx(p.x), this.wz(p.y), SURFACE_Y - 0.006);
+    this.fogPool.end();
   }
 
   /** Blue reachable tiles plus the red ring of tiles it could shoot into. */

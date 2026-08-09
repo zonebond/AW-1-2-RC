@@ -3,7 +3,10 @@
  * renderer, which makes it the fastest way to catch a broken damage table,
  * a pathfinding dead end, or a turn loop that never terminates.
  *
- *   npx tsx tools/simulate.ts [mapId] [maxDays] [seed]
+ *   npx tsx tools/simulate.ts [mapId] [maxDays] [seed] [fog]
+ *
+ * Pass "fog" as the fourth argument to run the match under fog of war, where
+ * both commanders only ever see part of the board.
  */
 import {
   attack,
@@ -18,6 +21,7 @@ import {
   type GameState,
 } from "../src/core/game";
 import { nextAiStep } from "../src/ai/ai";
+import { resolveMovePath } from "../src/core/fog";
 import { mapById, MAPS } from "../src/core/maps";
 import { displayHp } from "../src/core/damage";
 import { UNITS } from "../src/core/units";
@@ -36,11 +40,13 @@ function mulberry32(seed: number): () => number {
 const mapId = process.argv[2] ?? MAPS[0].id;
 const maxDays = Number(process.argv[3] ?? 40);
 const seed = Number(process.argv[4] ?? 12345);
+const fog = process.argv[5] === "fog";
 
 const entry = mapById(mapId);
 const state = createGame(entry.build(), entry.startUnits, {
   aiOpponent: true,
   random: mulberry32(seed),
+  fog,
 });
 // Drive both sides with the AI so a full match runs unattended.
 state.players[0].isAI = true;
@@ -52,6 +58,7 @@ function summarise(state: GameState, player: PlayerId): string {
 }
 
 let steps = 0;
+let ambushes = 0;
 let ordersThisTurn = 0;
 const stepBudget = 200_000;
 
@@ -85,7 +92,15 @@ while (state.winner === null && state.day <= maxDays && steps < stepBudget) {
   ordersThisTurn++;
   if (ordersThisTurn > 400) throw new Error("turn did not terminate");
 
-  moveUnit(state, unit, step.order.path);
+  // Under fog the AI can plan through a unit it cannot see; the move stops
+  // there and the turn is spent, exactly as it would be for a human.
+  const walked = resolveMovePath(state, unit, step.order.path);
+  moveUnit(state, unit, walked);
+  if (walked.length < step.order.path.length) {
+    ambushes++;
+    finishAction(state, unit);
+    continue;
+  }
 
   switch (step.order.then.kind) {
     case "attack": {
@@ -107,6 +122,7 @@ while (state.winner === null && state.day <= maxDays && steps < stepBudget) {
 }
 
 console.log("");
+if (fog) console.log(`战争迷雾：开 —— 全场共 ${ambushes} 次遭遇伏击`);
 if (state.winner !== null) {
   const name = state.winner === 0 ? "红星军" : "蓝月军";
   const reason = state.endReason === "hq" ? "攻陷司令部" : "全歼敌军";

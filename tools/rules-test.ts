@@ -11,6 +11,7 @@
 import {
   actionsAt,
   attack,
+  canAttack,
   buildUnit,
   capture,
   createGame,
@@ -28,9 +29,17 @@ import {
 } from "../src/core/game";
 import { computeDamage, displayHp } from "../src/core/damage";
 import { parseMap } from "../src/core/map";
+import { inRange } from "../src/core/pathfinding";
 import { moveCost } from "../src/core/terrain";
 import { UNITS } from "../src/core/units";
-import type { PlayerId, UnitId } from "../src/core/types";
+import {
+  canSeeUnit,
+  resolveMovePath,
+  visibleTiles,
+  visibleUnits,
+  visionOf,
+} from "../src/core/fog";
+import { key, type PlayerId, type UnitId } from "../src/core/types";
 
 let passed = 0;
 const failures: string[] = [];
@@ -66,6 +75,10 @@ const SANDBOX = [
 /** Board is 12 wide, 5 tall. Columns 5-11 of rows 0 and 2 hold the specials. */
 function sandbox(): GameState {
   return createGame(parseMap("sandbox", SANDBOX), [], { random: () => 0 });
+}
+
+function foggySandbox(): GameState {
+  return createGame(parseMap("sandbox", SANDBOX), [], { random: () => 0, fog: true });
 }
 
 function place(
@@ -572,6 +585,149 @@ group("回合流程");
   const result = attack(state, attacker, defender);
 
   ok("预测伤害不高于实际伤害（运气只会加成）", shot.damage <= result.damage);
+}
+
+/* ------------------------------------------------------------------ *
+ * Fog of war
+ * ------------------------------------------------------------------ */
+
+group("战争迷雾");
+
+{
+  const state = sandbox();
+  place(state, "infantry", 0, 1, 1);
+  const enemy = place(state, "tank", 1, 10, 4);
+  ok("迷雾关闭时全图可见", canSeeUnit(state, 0, enemy));
+  check("迷雾关闭时可见单位数等于全部", visibleUnits(state, 0).length, state.units.length);
+}
+
+{
+  const state = foggySandbox();
+  const scout = place(state, "infantry", 0, 1, 1);
+  const near = place(state, "tank", 1, 3, 1);
+  const far = place(state, "tank", 1, 8, 1);
+
+  check("步兵视野为 2", visionOf(state, scout), 2);
+  ok("视野内的敌人可见", canSeeUnit(state, 0, near));
+  ok("视野外的敌人不可见", !canSeeUnit(state, 0, far));
+  check("只看得到自己和近处的敌人", visibleUnits(state, 0).length, 2);
+}
+
+{
+  // Vision is a diamond, not a square: distance is Manhattan.
+  const state = foggySandbox();
+  place(state, "infantry", 0, 4, 2);
+  const diagonal = place(state, "tank", 1, 5, 3); // distance 2
+  const corner = place(state, "tank", 1, 6, 4); // distance 4
+  ok("对角线距离 2 在视野内", canSeeUnit(state, 0, diagonal));
+  ok("对角线距离 4 在视野外", !canSeeUnit(state, 0, corner));
+}
+
+{
+  // The sandbox is 12 tiles wide; row 0 column 6 is the forest.
+  const state = foggySandbox();
+  check("确认 (6,0) 是森林", state.map.tiles[6].terrain, "wood");
+
+  const watcher = place(state, "recon", 0, 4, 0); // vision 5, two tiles away
+  const hidden = place(state, "infantry", 1, 6, 0);
+  ok("侦察车视野覆盖该格", visibleTiles(state, 0).has(key(6, 0)));
+  ok("但森林里的单位看不见", !canSeeUnit(state, 0, hidden));
+
+  watcher.x = 6;
+  watcher.y = 1; // now adjacent
+  ok("贴到相邻格就能发现", canSeeUnit(state, 0, hidden));
+}
+
+{
+  const state = foggySandbox();
+  check("确认 (5,0) 是山地", state.map.tiles[5].terrain, "mountain");
+
+  const climber = place(state, "infantry", 0, 5, 0);
+  check("步兵上山视野 2 + 3", visionOf(state, climber), 5);
+
+  const vehicle = place(state, "recon", 0, 5, 0);
+  check("车辆上山没有加成", visionOf(state, vehicle), UNITS.recon.vision);
+}
+
+{
+  const state = foggySandbox();
+  const gunner = place(state, "tank", 0, 1, 1);
+  const target = place(state, "tank", 1, 2, 1);
+  // Adjacent, so it is visible and attackable.
+  ok("看得见的相邻敌人可以攻击", canAttack(state, gunner, target));
+
+  const ghost = place(state, "tank", 1, 1, 2);
+  // Also adjacent — vision 3 for a tank covers it, so this one is fair game.
+  ok("视野内的敌人可以攻击", canAttack(state, ghost, gunner));
+}
+
+{
+  // An enemy hidden in forest cannot be shelled even when the tile itself is
+  // lit and well inside range: cover beats line of sight.
+  const state = foggySandbox();
+  const gunner = place(state, "artillery", 0, 4, 0);
+  place(state, "recon", 0, 4, 1); // lights the forest without standing next to it
+  const hidden = place(state, "infantry", 1, 6, 0);
+
+  ok("目标所在格是亮的", visibleTiles(state, 0).has(key(6, 0)));
+  ok("距离在火炮射程内", inRange("artillery", { x: 4, y: 0 }, hidden));
+  ok("看不见就打不到", !canAttack(state, gunner, hidden));
+}
+
+{
+  // Ambush: the plan runs through a tile the mover believes is empty.
+  const state = foggySandbox();
+  const mover = place(state, "tank", 0, 1, 4);
+  place(state, "infantry", 1, 4, 4);
+
+  const plan = [
+    { x: 1, y: 4 },
+    { x: 2, y: 4 },
+    { x: 3, y: 4 },
+    { x: 4, y: 4 },
+    { x: 5, y: 4 },
+  ];
+  const walked = resolveMovePath(state, mover, plan);
+  check("被伏击时在敌人前一格停下", walked.length, 3);
+  check("停在 x=3", walked[walked.length - 1].x, 3);
+}
+
+{
+  // The same plan with the enemy visible is not an ambush — but then the
+  // route would never have been offered in the first place.
+  const state = foggySandbox();
+  const mover = place(state, "tank", 0, 1, 4);
+  const plan = [
+    { x: 1, y: 4 },
+    { x: 2, y: 4 },
+    { x: 3, y: 4 },
+  ];
+  check("路上没人时走完全程", resolveMovePath(state, mover, plan).length, 3);
+}
+
+{
+  // With fog off, resolveMovePath must never truncate: the planner already
+  // routed around every unit on the board.
+  const state = sandbox();
+  const mover = place(state, "tank", 0, 1, 4);
+  place(state, "infantry", 1, 3, 4);
+  const plan = [
+    { x: 1, y: 4 },
+    { x: 2, y: 4 },
+    { x: 3, y: 4 },
+  ];
+  check("关闭迷雾时不截断路径", resolveMovePath(state, mover, plan).length, 3);
+}
+
+{
+  // Owned property lights its surroundings even with no unit nearby.
+  const state = foggySandbox();
+  place(state, "infantry", 0, 0, 4);
+  const hqTile = state.map.tiles[11]; // row 0, column 11 = h0
+  check("确认该格是司令部", hqTile.terrain, "hq");
+  check("司令部属于我方", hqTile.owner, 0);
+  ok("自己的建筑照亮周围", visibleTiles(state, 0).has(key(11, 2)));
+  ok("照亮范围有限", !visibleTiles(state, 0).has(key(11, 4)));
 }
 
 /* ------------------------------------------------------------------ */
