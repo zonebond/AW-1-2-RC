@@ -43,9 +43,10 @@ export function reachable(
   map: GameMap,
   unit: UnitLike,
   occupancy: Occupancy,
+  moveBonus = 0,
 ): Map<number, ReachableNode> {
   const def = UNITS[unit.type];
-  const budget = Math.min(def.move, unit.fuel);
+  const budget = Math.min(def.move + moveBonus, unit.fuel);
 
   const origin: ReachableNode = { x: unit.x, y: unit.y, cost: 0, from: -1, canStop: true };
   const nodes = new Map<number, ReachableNode>([[key(unit.x, unit.y), origin]]);
@@ -110,15 +111,21 @@ export function pathTo(
  * Tiles this unit could shoot from the given position. Indirect units fire in
  * a ring and must have stayed put; direct units hit their neighbours.
  */
-export function attackableTiles(map: GameMap, type: UnitId, from: Point): Point[] {
+export function attackableTiles(
+  map: GameMap,
+  type: UnitId,
+  from: Point,
+  rangeBonus = 0,
+): Point[] {
   const def = UNITS[type];
   if (def.rangeMax === 0) return [];
+  const reach = def.rangeMax + (def.rangeMin > 1 ? rangeBonus : 0);
 
   const tiles: Point[] = [];
-  for (let dy = -def.rangeMax; dy <= def.rangeMax; dy++) {
-    for (let dx = -def.rangeMax; dx <= def.rangeMax; dx++) {
+  for (let dy = -reach; dy <= reach; dy++) {
+    for (let dx = -reach; dx <= reach; dx++) {
       const distance = Math.abs(dx) + Math.abs(dy);
-      if (distance < def.rangeMin || distance > def.rangeMax) continue;
+      if (distance < def.rangeMin || distance > reach) continue;
       const x = from.x + dx;
       const y = from.y + dy;
       if (tileAt(map, x, y) === null) continue;
@@ -129,10 +136,18 @@ export function attackableTiles(map: GameMap, type: UnitId, from: Point): Point[
 }
 
 /** True when this attacker, standing here, could engage that defender there. */
-export function inRange(attackerType: UnitId, from: Point, target: Point): boolean {
+export function inRange(
+  attackerType: UnitId,
+  from: Point,
+  target: Point,
+  rangeBonus = 0,
+): boolean {
   const def = UNITS[attackerType];
+  // Only indirect weapons benefit from a range bonus; extending a tank's
+  // reach to two tiles would turn it into a different unit entirely.
+  const reach = def.rangeMax + (def.rangeMin > 1 ? rangeBonus : 0);
   const distance = Math.abs(from.x - target.x) + Math.abs(from.y - target.y);
-  return distance >= def.rangeMin && distance <= def.rangeMax && def.rangeMax > 0;
+  return distance >= def.rangeMin && distance <= reach && def.rangeMax > 0;
 }
 
 export function canEngage(attackerType: UnitId, defenderType: UnitId): boolean {

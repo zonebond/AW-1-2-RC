@@ -10,8 +10,12 @@
  */
 import {
   actionsAt,
+  activatePower,
   attack,
+  canActivate,
   canAttack,
+  modsFor,
+  powerStars,
   buildUnit,
   capture,
   createGame,
@@ -28,6 +32,7 @@ import {
   type Unit,
 } from "../src/core/game";
 import { computeDamage, displayHp } from "../src/core/damage";
+import { COS, POINTS_PER_STAR, type CoId } from "../src/core/co";
 import { parseMap } from "../src/core/map";
 import { inRange } from "../src/core/pathfinding";
 import { moveCost } from "../src/core/terrain";
@@ -728,6 +733,203 @@ group("战争迷雾");
   check("司令部属于我方", hqTile.owner, 0);
   ok("自己的建筑照亮周围", visibleTiles(state, 0).has(key(11, 2)));
   ok("照亮范围有限", !visibleTiles(state, 0).has(key(11, 4)));
+}
+
+/* ------------------------------------------------------------------ *
+ * Commanders
+ * ------------------------------------------------------------------ */
+
+group("指挥官");
+
+function coSandbox(a: CoId, b: CoId): GameState {
+  return createGame(parseMap("sandbox", SANDBOX), [], { random: () => 0, cos: [a, b] });
+}
+
+{
+  // The neutral commander must leave the maths exactly as it was.
+  const plain = computeDamage({
+    attackerType: "tank",
+    attackerHp: 100,
+    attackerAmmo: 9,
+    defenderType: "tank",
+    defenderHp: 100,
+    defenderTerrain: "plain",
+    luck: 0,
+  })!;
+
+  const state = coSandbox("steady", "steady");
+  const a = place(state, "tank", 0, 1, 1);
+  const d = place(state, "tank", 1, 2, 1);
+  check("中立指挥官不改变伤害", forecast(state, a, d)!.damage, plain);
+  check("中立指挥官没有攻击加成", modsFor(state, 0, "tank").attack, 0);
+  check("中立指挥官没有防御加成", modsFor(state, 0, "tank").defence, 0);
+}
+
+{
+  // Attack bonus scales the weapon's base value, so it must strictly raise
+  // damage against the same target on the same terrain.
+  const neutral = coSandbox("steady", "steady");
+  const na = place(neutral, "tank", 0, 1, 1);
+  const nd = place(neutral, "tank", 1, 2, 1);
+  const base = forecast(neutral, na, nd)!.damage;
+
+  const sharp = coSandbox("edge", "steady");
+  const sa = place(sharp, "tank", 0, 1, 1);
+  const sd = place(sharp, "tank", 1, 2, 1);
+  const boosted = forecast(sharp, sa, sd)!.damage;
+
+  check("锋刃日常攻击等于表里的值", modsFor(sharp, 0, "tank").attack, COS.edge.d2d.attack);
+  ok("攻击加成确实提高了伤害", boosted > base);
+}
+
+{
+  // Defence divides at the end, so the same shot must land softer.
+  const neutral = coSandbox("steady", "steady");
+  const na = place(neutral, "tank", 0, 1, 1);
+  const nd = place(neutral, "tank", 1, 2, 1);
+  const base = forecast(neutral, na, nd)!.damage;
+
+  const wall = coSandbox("steady", "granite");
+  const wa = place(wall, "tank", 0, 1, 1);
+  const wd = place(wall, "tank", 1, 2, 1);
+
+  check("磐石日常防御 +10", modsFor(wall, 1, "tank").defence, 10);
+  ok("防御加成确实降低了伤害", forecast(wall, wa, wd)!.damage < base);
+}
+
+{
+  // A scoped bonus must not leak onto units outside the scope.
+  const state = coSandbox("swift", "steady");
+  check("疾行给步兵加成", modsFor(state, 0, "infantry").attack, COS.swift.d2d.attack);
+  check("疾行给机步加成", modsFor(state, 0, "mech").attack, COS.swift.d2d.attack);
+  check("疾行不给坦克加成", modsFor(state, 0, "tank").attack, 0);
+  check("疾行不给火炮加成", modsFor(state, 0, "artillery").attack, 0);
+}
+
+{
+  const state = coSandbox("thunder", "steady");
+  check("远雷给火炮加成", modsFor(state, 0, "artillery").attack, COS.thunder.d2d.attack);
+  check("远雷给火箭炮加成", modsFor(state, 0, "rockets").attack, COS.thunder.d2d.attack);
+  check("远雷不给坦克加成", modsFor(state, 0, "tank").attack, 0);
+}
+
+/* ---- the meter ---- */
+
+{
+  const state = coSandbox("steady", "steady");
+  check("开局没有能量", powerStars(state, 0), 0);
+  ok("开局无法发动", !canActivate(state, 0, "power"));
+
+  const a = place(state, "tank", 0, 1, 1);
+  const d = place(state, "tank", 1, 2, 1);
+  attack(state, a, d);
+  ok("交火后攻方获得能量", state.players[0].charge > 0);
+  ok("交火后守方也获得能量", state.players[1].charge > 0);
+  ok("攻方获得的能量更多", state.players[0].charge > state.players[1].charge);
+}
+
+{
+  // Charge is capped at the super's cost; a quiet stretch cannot bank two.
+  const state = coSandbox("steady", "steady");
+  // Well past the cap, so the clamp is what decides the result rather than
+  // the seed value happening to land under it.
+  state.players[0].charge = COS.steady.superStars * POINTS_PER_STAR * 3;
+  const a = place(state, "tank", 0, 1, 1);
+  const d = place(state, "tank", 1, 2, 1);
+  attack(state, a, d);
+  check("能量上限为超级技所需星数", powerStars(state, 0), COS.steady.superStars);
+}
+
+{
+  const state = coSandbox("edge", "steady");
+  place(state, "tank", 0, 1, 1);
+  place(state, "tank", 1, 8, 1);
+
+  state.players[0].charge = COS.edge.powerStars * POINTS_PER_STAR;
+  ok("攒够星数可以发动普通技", canActivate(state, 0, "power"));
+  ok("但还不够发动超级技", !canActivate(state, 0, "super"));
+  ok("不是自己的回合不能发动", !canActivate(state, 1, "power"));
+
+  const before = modsFor(state, 0, "tank").attack;
+  ok("发动成功", activatePower(state, 0, "power"));
+  check("发动后能量被扣除", powerStars(state, 0), 0);
+  check("技能效果与日常叠加", modsFor(state, 0, "tank").attack, before + 25);
+  ok("同一回合不能再发动", !canActivate(state, 0, "power"));
+}
+
+{
+  // The power must expire with the turn that spent it.
+  const state = coSandbox("edge", "steady");
+  place(state, "tank", 0, 1, 1);
+  place(state, "tank", 1, 8, 1);
+  state.players[0].charge = COS.edge.powerStars * POINTS_PER_STAR;
+  activatePower(state, 0, "power");
+  check(
+    "发动中日常与技能加成叠加",
+    modsFor(state, 0, "tank").attack,
+    COS.edge.d2d.attack! + COS.edge.power.mods.attack!,
+  );
+
+  endTurn(state);
+  check("回合结束后只剩日常加成", modsFor(state, 0, "tank").attack, COS.edge.d2d.attack);
+  check("回合结束后技能状态清空", state.players[0].activePower, null);
+}
+
+{
+  // A super that heals must actually put HP back on the board.
+  const state = coSandbox("granite", "steady");
+  const hurt = place(state, "tank", 0, 1, 1, { hp: 50 });
+  place(state, "tank", 1, 8, 1);
+  state.players[0].charge = COS.granite.superStars * POINTS_PER_STAR;
+  ok("超级技可以发动", activatePower(state, 0, "super"));
+  check("超级技回复了 2 HP", hurt.hp, 70);
+}
+
+{
+  // Healing must not push a healthy unit past full.
+  const state = coSandbox("granite", "steady");
+  const full = place(state, "tank", 0, 1, 1);
+  place(state, "tank", 1, 8, 1);
+  state.players[0].charge = COS.granite.superStars * POINTS_PER_STAR;
+  activatePower(state, 0, "super");
+  check("满血单位不会超过 100", full.hp, 100);
+}
+
+/* ---- movement and range ---- */
+
+{
+  const state = coSandbox("swift", "steady");
+  const runner = place(state, "infantry", 0, 1, 1);
+  const reachBefore = landingTiles(state, runner).length;
+
+  state.players[0].charge = COS.swift.powerStars * POINTS_PER_STAR;
+  activatePower(state, 0, "power");
+  check("疾进给出 +1 移动", modsFor(state, 0, "infantry").move, 1);
+  ok("移动范围确实变大了", landingTiles(state, runner).length > reachBefore);
+}
+
+{
+  const state = coSandbox("thunder", "steady");
+  const gun = place(state, "artillery", 0, 1, 1);
+  const far = place(state, "infantry", 1, 5, 1); // distance 4, one past range 3
+
+  ok("射程外打不到", !canAttack(state, gun, far));
+
+  state.players[0].charge = COS.thunder.superStars * POINTS_PER_STAR;
+  activatePower(state, 0, "super");
+  check("覆盖射击给出 +1 射程", modsFor(state, 0, "artillery").range, 1);
+  ok("加了射程后够得着", canAttack(state, gun, far));
+}
+
+{
+  // The range bonus is for indirect weapons only; a tank must stay at one.
+  const state = coSandbox("thunder", "steady");
+  const tank = place(state, "tank", 0, 1, 1);
+  const two = place(state, "infantry", 1, 3, 1);
+  state.players[0].charge = COS.thunder.superStars * POINTS_PER_STAR;
+  activatePower(state, 0, "super");
+  check("直射单位没有射程加成", modsFor(state, 0, "tank").range, 0);
+  ok("坦克依然只能打相邻", !canAttack(state, tank, two));
 }
 
 /* ------------------------------------------------------------------ */

@@ -1,5 +1,16 @@
 import { displayHp } from "../core/damage";
-import { propertiesOf, type Forecast, type GameState, type Unit } from "../core/game";
+import {
+  canActivate,
+  maxStars,
+  powerStars,
+  propertiesOf,
+  type Forecast,
+  type GameState,
+  type PowerKind,
+  type Unit,
+} from "../core/game";
+import { COS, CO_IDS, type CoId } from "../core/co";
+import { coPortrait } from "./coCard";
 import { tileAt, type Tile } from "../core/map";
 import { CAPTURE_POINTS, TERRAIN } from "../core/terrain";
 import {
@@ -51,6 +62,21 @@ export interface MenuItem {
   onSelect: () => void;
 }
 
+/** Human-readable summary of a commander's always-on bias. */
+function describeD2d(id: CoId): string {
+  const mods = COS[id].d2d;
+  const scope =
+    mods.scope === "foot" ? "步兵" : mods.scope === "indirect" ? "间接单位" : "全军";
+  const parts: string[] = [];
+  if (mods.attack !== undefined) {
+    parts.push(`${scope}攻击 ${mods.attack > 0 ? "+" : ""}${mods.attack}%`);
+  }
+  if (mods.defence !== undefined) {
+    parts.push(`防御 ${mods.defence > 0 ? "+" : ""}${mods.defence}%`);
+  }
+  return parts.length === 0 ? "无加成，无短板" : parts.join("，");
+}
+
 export class Hud {
   readonly root = element("div");
 
@@ -71,6 +97,10 @@ export class Hud {
   private readonly banner = element("div", "banner");
   private readonly endTurnButton = element("button", "end-turn", "结束回合");
   private readonly fogButton = element("button", "fog-toggle", "迷雾：关");
+  private readonly coBar = element("div", "co-bar");
+  private readonly coCards: HTMLElement[] = [];
+  private readonly powerButtons: HTMLButtonElement[] = [];
+  private coPicker: HTMLElement | null = null;
   private resultScreen: HTMLElement | null = null;
 
   constructor(
@@ -78,6 +108,8 @@ export class Hud {
     private readonly onEndTurn: () => void,
     private readonly onRestart: () => void,
     private readonly onToggleFog: () => void = () => {},
+    private readonly onPower: (kind: PowerKind) => void = () => {},
+    private readonly onPickCo: (id: CoId) => void = () => {},
   ) {
     this.root.id = "hud";
 
@@ -102,7 +134,36 @@ export class Hud {
     hint.innerHTML =
       "<kbd>左键</kbd>选择/确认　<kbd>拖动</kbd>或<kbd>WASD</kbd>平移　" +
       "<kbd>空格</kbd>回到我方　<kbd>右键</kbd>取消　<kbd>滚轮</kbd>缩放　" +
-      "<kbd>M</kbd>静音　<kbd>E</kbd>结束回合";
+      "<kbd>P</kbd>指挥官技　<kbd>M</kbd>静音　<kbd>E</kbd>结束回合";
+
+    // One card per side. Only the player's carries buttons; the opponent's is
+    // a readout, so you can see a power coming before it lands on you.
+    for (const id of [0, 1] as const) {
+      const card = element("div", `panel co-card p${id}`);
+      const portrait = element("img", "co-portrait") as HTMLImageElement;
+      const text = element("div", "co-text");
+      const nameRow = element("div", "co-name");
+      const meter = element("div", "co-meter");
+      text.append(nameRow, meter);
+      card.append(portrait, text);
+
+      if (id === 0) {
+        const actions = element("div", "co-actions");
+        for (const kind of ["power", "super"] as PowerKind[]) {
+          const button = element("button", `co-power ${kind}`) as HTMLButtonElement;
+          button.addEventListener("click", () => this.onPower(kind));
+          this.powerButtons.push(button);
+          actions.append(button);
+        }
+        const change = element("button", "co-change", "换将");
+        change.addEventListener("click", () => this.showCoPicker());
+        actions.append(change);
+        text.append(actions);
+      }
+
+      this.coCards.push(card);
+      this.coBar.append(card);
+    }
 
     this.endTurnButton.addEventListener("click", () => this.onEndTurn());
 
@@ -113,6 +174,7 @@ export class Hud {
       this.menu,
       this.build,
       this.cinema,
+      this.coBar,
       this.audioToast,
       this.forecastPanel,
       this.banner,
@@ -137,6 +199,7 @@ export class Hud {
 
     this.fogButton.textContent = state.fog ? "迷雾：开" : "迷雾：关";
     this.fogButton.classList.toggle("on", state.fog);
+    this.refreshCoBar(state);
 
     const humanTurn = state.turn === 0 && state.winner === null;
     this.endTurnButton.disabled = !humanTurn;
@@ -485,6 +548,120 @@ export class Hud {
     );
     node.style.left = `${x}px`;
     node.style.top = `${y}px`;
+  }
+
+  /**
+   * Commander cards: portrait, name, and the meter as discrete stars. Stars
+   * are drawn rather than shown as a percentage because the two thresholds
+   * that matter are whole numbers, and counting pips is faster than reading
+   * a bar.
+   */
+  private refreshCoBar(state: GameState): void {
+    for (const id of [0, 1] as const) {
+      const seat = state.players[id];
+      const co = COS[seat.co];
+      const card = this.coCards[id];
+
+      const portrait = card.querySelector(".co-portrait") as HTMLImageElement;
+      if (portrait.dataset.co !== seat.co) {
+        portrait.src = coPortrait(seat.co);
+        portrait.dataset.co = seat.co;
+      }
+      card.style.setProperty("--co-accent", hex(co.color));
+      card.classList.toggle("acting", state.turn === id && state.winner === null);
+      card.classList.toggle("powered", seat.activePower !== null);
+
+      const stars = powerStars(state, id);
+      const total = maxStars(state, id);
+      const active =
+        seat.activePower === null
+          ? ""
+          : ` · ${seat.activePower === "super" ? co.super.name : co.power.name}`;
+      card.querySelector(".co-name")!.textContent = `${co.name}「${co.title}」${active}`;
+
+      const meter = card.querySelector(".co-meter")!;
+      meter.textContent = "";
+      for (let i = 0; i < total; i++) {
+        const pip = element("span", "co-star");
+        if (i < stars) pip.classList.add("full");
+        // Mark where each power sits, so the meter shows what it is worth.
+        if (i + 1 === co.powerStars) pip.classList.add("mark-power");
+        if (i + 1 === co.superStars) pip.classList.add("mark-super");
+        meter.append(pip);
+      }
+    }
+
+    const you = state.players[0];
+    const co = COS[you.co];
+    for (const [index, kind] of (["power", "super"] as PowerKind[]).entries()) {
+      const button = this.powerButtons[index];
+      const power = kind === "super" ? co.super : co.power;
+      const cost = kind === "super" ? co.superStars : co.powerStars;
+      button.textContent = `${power.name} ${cost}★`;
+      button.title = power.description;
+      button.disabled = !canActivate(state, 0, kind);
+    }
+  }
+
+  /** Commander select. Picking one starts a fresh match. */
+  showCoPicker(): void {
+    this.hideCoPicker();
+
+    const screen = element("div", "co-picker");
+    const panel = element("div", "co-picker-panel");
+    panel.append(element("h2", undefined, "选择指挥官"));
+    panel.append(
+      element(
+        "p",
+        "co-picker-note",
+        "指挥官决定你的日常加成和两个战术技能。换将会重新开始一局。",
+      ),
+    );
+
+    const grid = element("div", "co-grid");
+    for (const id of CO_IDS) {
+      const co = COS[id];
+      const item = element("button", "co-option") as HTMLButtonElement;
+      item.style.setProperty("--co-accent", hex(co.color));
+
+      const portrait = element("img", "co-option-portrait") as HTMLImageElement;
+      portrait.src = coPortrait(id, 128);
+
+      const body = element("div", "co-option-body");
+      body.append(element("div", "co-option-name", `${co.name}「${co.title}」`));
+      body.append(element("div", "co-option-blurb", co.blurb));
+      body.append(element("div", "co-option-line", `日常：${describeD2d(co.id)}`));
+      body.append(
+        element("div", "co-option-line", `${co.powerStars}★ ${co.power.name} — ${co.power.description}`),
+      );
+      body.append(
+        element("div", "co-option-line", `${co.superStars}★ ${co.super.name} — ${co.super.description}`),
+      );
+
+      item.append(portrait, body);
+      item.addEventListener("click", () => {
+        this.hideCoPicker();
+        this.onPickCo(id);
+      });
+      grid.append(item);
+    }
+
+    const close = element("button", "co-picker-close", "取消");
+    close.addEventListener("click", () => this.hideCoPicker());
+
+    panel.append(grid, close);
+    screen.append(panel);
+    this.root.append(screen);
+    this.coPicker = screen;
+  }
+
+  hideCoPicker(): void {
+    this.coPicker?.remove();
+    this.coPicker = null;
+  }
+
+  get coPickerOpen(): boolean {
+    return this.coPicker !== null;
   }
 
   /** A line of text that appears near the top and fades itself out. */

@@ -62,6 +62,9 @@ const state = () =>
       turn: s.turn,
       winner: s.winner,
       fog: s.fog,
+      cos: [s.players[0].co, s.players[1].co],
+      charge: [s.players[0].charge, s.players[1].charge],
+      activePower: [s.players[0].activePower, s.players[1].activePower],
       funds: [s.players[0].funds, s.players[1].funds],
       owned: [
         s.map.tiles.filter((t) => t.owner === 0).length,
@@ -621,6 +624,66 @@ const clear = await page.evaluate(() => ({
 check("关闭迷雾后恢复全图可见", clear.fog === false && clear.visible === clear.total, JSON.stringify(clear));
 check("关闭迷雾后所有单位都被绘制", clear.drawn === clear.total, JSON.stringify(clear));
 await shot("16-fog-off");
+
+/* ------------------------------------------------------------------ *
+ * 12. Commanders
+ * ------------------------------------------------------------------ */
+
+console.log("\n[12] 指挥官");
+
+s = await state();
+check("双方都有指挥官", s.cos[0] !== undefined && s.cos[1] !== undefined, JSON.stringify(s.cos));
+check("开局没有能量", s.charge[0] === 0, `charge=${s.charge[0]}`);
+check("开局没有技能生效", s.activePower[0] === null);
+
+check("指挥官卡片有两张", (await page.locator(".co-card").count()) === 2);
+check("能量星条已绘制", (await page.locator(".co-card.p0 .co-star").count()) > 0);
+
+// Both power buttons must be dead at zero charge.
+const powerDisabled = await page.evaluate(() =>
+  Array.from(document.querySelectorAll(".co-power")).map((b) => b.disabled),
+);
+check("没能量时两个技能都不可点", powerDisabled.every(Boolean), JSON.stringify(powerDisabled));
+
+// Fill the meter and confirm the button comes alive, then fire it.
+await page.evaluate(() => window.__aw.giveCharge(0, 99));
+await page.waitForTimeout(300);
+const readyState = await page.evaluate(() => ({
+  stars: window.__aw.stars(0),
+  enabled: !document.querySelector(".co-power.power").disabled,
+}));
+check("攒满后技能可点", readyState.enabled, JSON.stringify(readyState));
+
+const beforePower = await state();
+await page.locator(".co-power.power").click();
+await page.waitForFunction(() => window.__aw.state().players[0].activePower !== null, null, {
+  timeout: 20000,
+});
+await settle();
+
+const during = await state();
+check("技能已生效", during.activePower[0] !== null, JSON.stringify(during.activePower));
+check("发动后能量被扣除", during.charge[0] < beforePower.charge[0]);
+check("卡片显示发动状态", (await page.locator(".co-card.p0.powered").count()) === 1);
+await shot("17-power-active");
+
+// It must expire when the turn does.
+await endTurnAndWaitForAi();
+const after = await state();
+check("回合结束后技能失效", after.activePower[0] === null, JSON.stringify(after.activePower));
+
+// The picker starts a fresh match with the chosen commander.
+await page.locator(".co-change").click();
+await page.waitForSelector(".co-picker", { timeout: 6000 });
+check("换将面板已打开", (await page.locator(".co-option").count()) >= 4);
+await shot("18-co-picker");
+
+await page.locator(".co-option").nth(3).click();
+await page.waitForTimeout(1400);
+const picked = await state();
+check("换将后回到第 1 天", picked.day === 1, `day=${picked.day}`);
+check("换将后指挥官已变更", picked.cos[0] !== beforePower.cos[0], JSON.stringify(picked.cos));
+check("换将后能量清零", picked.charge[0] === 0);
 
 /* ------------------------------------------------------------------ */
 

@@ -1,8 +1,11 @@
 import {
+  canActivate,
   forecast,
+  modsFor,
   movementRange,
   unitAt,
   type GameState,
+  type PowerKind,
   type Unit,
 } from "../core/game";
 import { attackableTiles, buildOccupancy, inRange, pathTo, reachable } from "../core/pathfinding";
@@ -38,6 +41,7 @@ export interface AiOrder {
 export type AiStep =
   | { kind: "order"; order: AiOrder }
   | { kind: "build"; x: number; y: number; type: UnitId }
+  | { kind: "power"; power: PowerKind }
   | { kind: "end" };
 
 interface ScoredOrder {
@@ -63,14 +67,15 @@ function threatMap(
     if (!hasWeapon(enemy.type)) continue;
 
     const power = (UNITS[enemy.type].cost / 1000) * (displayHp(enemy.hp) / 10);
-    const nodes = reachable(state.map, enemy, occupancy);
+    const enemyRange = modsFor(state, enemy.owner, enemy.type).range;
+    const nodes = reachable(state.map, enemy, occupancy, modsFor(state, enemy.owner, enemy.type).move);
     const covered = new Set<number>();
 
     for (const node of nodes.values()) {
       // Indirect units have to stand still to shoot, so only their current
       // position projects threat.
       if (isIndirect(enemy.type) && (node.x !== enemy.x || node.y !== enemy.y)) continue;
-      for (const tile of attackableTiles(state.map, enemy.type, node)) {
+      for (const tile of attackableTiles(state.map, enemy.type, node, enemyRange)) {
         covered.add(key(tile.x, tile.y));
       }
     }
@@ -135,6 +140,7 @@ function evaluate(
   known: readonly Unit[],
 ): ScoredOrder | null {
   const nodes = movementRange(state, unit);
+  const rangeBonus = modsFor(state, unit.owner, unit.type).range;
   const options: ScoredOrder[] = [];
 
   for (const node of nodes.values()) {
@@ -151,7 +157,7 @@ function evaluate(
       const probe: Unit = { ...unit, x: at.x, y: at.y };
       for (const enemy of known) {
         if (enemy.owner === unit.owner) continue;
-        if (!inRange(unit.type, at, enemy)) continue;
+        if (!inRange(unit.type, at, enemy, rangeBonus)) continue;
         const shot = forecast(state, probe, enemy);
         if (shot === null) continue;
 
@@ -186,6 +192,7 @@ function evaluate(
 
   const objective = pickObjective(state, unit, known);
   if (objective !== null) {
+    const standOff = isIndirect(unit.type) ? UNITS[unit.type].rangeMax + rangeBonus : 0;
     let bestNode: { x: number; y: number } | null = null;
     let bestScore = -Infinity;
     for (const node of nodes.values()) {
@@ -194,7 +201,10 @@ function evaluate(
       const distance = Math.abs(node.x - objective.x) + Math.abs(node.y - objective.y);
       const cover = TERRAIN[tileAt(state.map, node.x, node.y)!.terrain].defence;
       const tileThreat = threat.get(key(node.x, node.y)) ?? 0;
-      const score = -distance * 100 + cover * 15 - tileThreat * 0.6;
+      // Guns want to arrive at their firing distance, not on top of the
+      // target: an indirect unit that closes to melee cannot shoot at all,
+      // and is defenceless when it gets there.
+      const score = -Math.abs(distance - standOff) * 100 + cover * 15 - tileThreat * 0.6;
       if (score > bestScore) {
         bestScore = score;
         bestNode = node;
@@ -240,15 +250,27 @@ function pickBuild(state: GameState): UnitId | null {
   const foot = own.filter((u) => UNITS[u.type].isFoot).length;
   const indirect = own.filter((u) => isIndirect(u.type)).length;
 
-  const wantFoot = foot < 2 || foot < own.length * 0.4;
+  // Build towards the commander — but only by raising the ceiling, never by
+  // buying guns ahead of tanks. Spending the opening on artillery loses the
+  // early fight for the map, and the guns never get to matter.
+  const artilleryBonus = modsFor(state, owner, "artillery").attack;
+  const footBonus = modsFor(state, owner, "infantry").attack;
+  const tankBonus = modsFor(state, owner, "tank").attack;
+  const lovesIndirect = artilleryBonus > tankBonus;
+  const lovesFoot = footBonus > tankBonus;
+
+  const indirectCap = lovesIndirect ? 3 : 2;
+  const footShare = lovesFoot ? 0.5 : 0.4;
+
+  const wantFoot = foot < 2 || foot < own.length * footShare;
   if (wantFoot && funds >= 1_000) {
     return funds >= 3_000 && foot >= 2 ? "mech" : "infantry";
   }
 
   if (funds >= 16_000 && own.length >= 5) return "mdtank";
-  if (funds >= 15_000 && indirect < 2) return "rockets";
+  if (funds >= 15_000 && indirect < indirectCap) return "rockets";
   if (funds >= 7_000) return "tank";
-  if (funds >= 6_000 && indirect < 2) return "artillery";
+  if (funds >= 6_000 && indirect < indirectCap) return "artillery";
   if (funds >= 4_000) return "recon";
   if (funds >= 3_000) return "mech";
   if (funds >= 1_000) return "infantry";
@@ -269,6 +291,28 @@ function freeBase(state: GameState): Point | null {
 }
 
 /**
+ * Is anything worth spending a power on this turn? A power lasts one turn, so
+ * firing it while the armies are still walking towards each other throws it
+ * away. "In contact" here means some unit of ours could reach a shot at
+ * something we can see.
+ */
+function inContact(state: GameState, known: readonly Unit[]): boolean {
+  const mine = state.units.filter((u) => u.owner === state.turn && !u.done);
+  for (const unit of mine) {
+    if (!hasWeapon(unit.type)) continue;
+    const range = modsFor(state, unit.owner, unit.type).range;
+    for (const node of movementRange(state, unit).values()) {
+      if (isIndirect(unit.type) && (node.x !== unit.x || node.y !== unit.y)) continue;
+      for (const enemy of known) {
+        if (enemy.owner === unit.owner) continue;
+        if (inRange(unit.type, node, enemy, range)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * The next thing the AI wants to do. Call repeatedly, applying each step, until
  * it returns `end`. Splitting it this way lets the renderer animate one order
  * at a time instead of the whole turn appearing at once.
@@ -277,6 +321,21 @@ export function nextAiStep(state: GameState): AiStep {
   if (state.winner !== null) return { kind: "end" };
 
   const idle = state.units.filter((u) => u.owner === state.turn && !u.done);
+
+  // Powers go off before any unit moves, so the whole turn benefits. The
+  // super is always worth waiting for when it is within reach of being paid
+  // for; below that, spend the normal power rather than sit on a full meter.
+  if (state.players[state.turn].activePower === null && idle.length > 0) {
+    const known = visibleUnits(state, state.turn);
+    if (inContact(state, known)) {
+      if (canActivate(state, state.turn, "super")) {
+        return { kind: "power", power: "super" };
+      }
+      if (canActivate(state, state.turn, "power")) {
+        return { kind: "power", power: "power" };
+      }
+    }
+  }
   if (idle.length > 0) {
     const known = visibleUnits(state, state.turn);
     const threat = threatMap(state, state.turn, known);

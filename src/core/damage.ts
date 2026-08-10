@@ -165,13 +165,22 @@ export interface DamageInput {
   defenderTerrain: TerrainId;
   /** 0-9 luck roll. Pass 0 for the deterministic forecast shown in the UI. */
   luck: number;
+  /** Attacker's commander bonus, in percent. 10 means +10% damage. */
+  attackBonus?: number;
+  /** Defender's commander bonus, in percent. 10 means incoming / 1.10. */
+  defenceBonus?: number;
 }
 
 /**
- * D = (base + luck) x (attackerHP/10) x (100 - terrainStars x defenderHP) / 100
+ * D = (base x atk% + luck) x (attackerHP/10) x (100 - terrainStars x defenderHP) / 100 / def%
  *
  * All three HP values are the 1-10 display figure, which is why a wounded
  * unit both hits softer and — sitting on cover — takes more.
+ *
+ * The commander bonuses bracket that core: the attacker's scales the weapon's
+ * base value before luck is added, so luck stays a flat roll rather than being
+ * amplified by a power; the defender's divides at the very end, which keeps
+ * "+10% defence" meaning the same thing regardless of what hit you.
  */
 export function computeDamage(input: DamageInput): number | null {
   const weapon = chooseWeapon(input.attackerType, input.defenderType, input.attackerAmmo);
@@ -181,9 +190,13 @@ export function computeDamage(input: DamageInput): number | null {
   const defHp = displayHp(input.defenderHp);
   if (atkHp <= 0 || defHp <= 0) return null;
 
+  const attackMul = (100 + (input.attackBonus ?? 0)) / 100;
+  const defenceDiv = Math.max(0.1, (100 + (input.defenceBonus ?? 0)) / 100);
+
   const stars = TERRAIN[input.defenderTerrain].defence;
   const defenceMultiplier = (100 - stars * defHp) / 100;
-  const raw = (weapon.base + input.luck) * (atkHp / 10) * defenceMultiplier;
+  const raw =
+    ((weapon.base * attackMul + input.luck) * (atkHp / 10) * defenceMultiplier) / defenceDiv;
   return Math.max(0, Math.floor(raw));
 }
 

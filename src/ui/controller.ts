@@ -1,6 +1,10 @@
 import {
   actionsAt,
+  activatePower,
   attack,
+  canActivate,
+  powerStars,
+  type PowerKind,
   buildUnit,
   buildableAt,
   capture,
@@ -33,6 +37,7 @@ import type { SoundId } from "../audio/sounds";
 import { UNITS, isIndirect } from "../core/units";
 import { chooseWeapon } from "../core/damage";
 import { canSeeUnit, resolveMovePath, visibleTiles } from "../core/fog";
+import { COS, POINTS_PER_STAR, type CoId } from "../core/co";
 import type { Stage } from "../render/scene";
 
 /**
@@ -110,6 +115,8 @@ export class Controller {
   private dragDistance = 0;
   /** Survives a restart, so toggling fog and replaying keeps the setting. */
   private fog: boolean;
+  /** The player's chosen commander; likewise carried across restarts. */
+  private co: CoId = "steady";
 
   constructor(
     private readonly stage: Stage,
@@ -121,7 +128,7 @@ export class Controller {
     fog = false,
   ) {
     this.fog = fog;
-    this.state = createGame(entry.build(), entry.startUnits, { fog });
+    this.state = createGame(entry.build(), entry.startUnits, { fog, cos: [this.co, "granite"] });
     this.world = new World(stage, this.state.map);
     this.world.speed = animationSpeed;
     this.rig = new CameraRig(stage, this.state.map.width, this.state.map.height);
@@ -134,6 +141,12 @@ export class Controller {
         this.fog = !this.fog;
         this.restart();
         this.hud.showToast(this.fog ? "🌫 战争迷雾已开启 · 新的一局" : "☀️ 战争迷雾已关闭 · 新的一局", 2400);
+      },
+      (kind) => void this.useHumanPower(kind),
+      (id) => {
+        this.co = id;
+        this.restart();
+        this.hud.showToast(`指挥官已换为 ${COS[id].name}「${COS[id].title}」· 新的一局`, 2400);
       },
     );
 
@@ -163,7 +176,10 @@ export class Controller {
   private restart(): void {
     this.hud.clearResult();
     this.world.dispose();
-    this.state = createGame(this.entry.build(), this.entry.startUnits, { fog: this.fog });
+    this.state = createGame(this.entry.build(), this.entry.startUnits, {
+      fog: this.fog,
+      cos: [this.co, "granite"],
+    });
     this.world = new World(this.stage, this.state.map);
     this.world.speed = this.animationSpeed;
     this.world.setShakeSink(this.rig);
@@ -298,11 +314,22 @@ export class Controller {
           this.hud.showAudioState(audio.muted, audio.musicEnabled);
           return;
         case "Escape":
+          if (this.hud.coPickerOpen) {
+            this.hud.hideCoPicker();
+            return;
+          }
           void this.cancel();
           return;
         case "e":
         case "E":
           void this.endHumanTurn();
+          return;
+        case "p":
+        case "P":
+          // One key for both tiers: the super is strictly the better spend
+          // when it is affordable, so there is nothing to choose between.
+          if (canActivate(this.state, 0, "super")) void this.useHumanPower("super");
+          else void this.useHumanPower("power");
           return;
         case " ":
           // Always a way back: re-frame on your own army.
@@ -816,6 +843,38 @@ export class Controller {
     await this.runAiTurn();
   }
 
+  /**
+   * The player firing a power. Anything mid-order is stood back down first,
+   * because a power changes movement ranges and attack ranges underneath the
+   * selection that is already on screen.
+   */
+  private async useHumanPower(kind: PowerKind): Promise<void> {
+    if (this.state.turn !== 0 || this.state.winner !== null) return;
+    if (this.mode.kind === "busy" || this.mode.kind === "over") return;
+    if (!canActivate(this.state, 0, kind)) return;
+
+    await this.cancel();
+    this.mode = { kind: "busy" };
+    await this.playPower(0, kind);
+    this.mode = { kind: "idle" };
+    this.world.overlay.setCursor(this.hovered);
+  }
+
+  /**
+   * Fire a commander power: banner, sound, and a re-sync so the new movement
+   * ranges and healed HP bars are on screen before anything acts on them.
+   */
+  private async playPower(player: PlayerId, kind: PowerKind): Promise<void> {
+    const co = COS[this.state.players[player].co];
+    const power = kind === "super" ? co.super : co.power;
+    if (!activatePower(this.state, player, kind)) return;
+
+    audio.play(kind === "super" ? "victory" : "captureDone");
+    this.syncWorld();
+    this.hud.refresh(this.state);
+    await this.hud.flashBanner(`${co.name} · ${power.name}`, teamHex(player));
+  }
+
   private async runAiTurn(): Promise<void> {
     let guard = 0;
     while (this.state.turn === 1 && this.state.winner === null && guard++ < 500) {
@@ -828,6 +887,11 @@ export class Controller {
         this.syncWorld();
         this.hud.refresh(this.state);
         await this.world.wait(0.06);
+        continue;
+      }
+
+      if (step.kind === "power") {
+        await this.playPower(1, step.power);
         continue;
       }
 
@@ -933,6 +997,8 @@ export class Controller {
     advance: (dt: number) => void;
     rawCamera: () => { x: number; y: number; z: number };
     setFog: (on: boolean) => void;
+    giveCharge: (player: PlayerId, points: number) => void;
+    stars: (player: PlayerId) => number;
     visibleUnitIds: () => number[];
     drawnUnits: () => number;
   } {
@@ -958,6 +1024,13 @@ export class Controller {
         this.restart();
       },
       drawnUnits: () => this.world.drawnUnitCount(),
+      // Charging the meter honestly would mean playing out a whole battle;
+      // the tests care about what a full meter enables, not how it filled.
+      giveCharge: (player, points) => {
+        this.state.players[player].charge += points * POINTS_PER_STAR;
+        this.hud.refresh(this.state);
+      },
+      stars: (player) => powerStars(this.state, player),
       visibleUnitIds: () => {
         const lit = visibleTiles(this.state, 0);
         return this.state.units

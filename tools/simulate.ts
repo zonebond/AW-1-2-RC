@@ -3,12 +3,13 @@
  * renderer, which makes it the fastest way to catch a broken damage table,
  * a pathfinding dead end, or a turn loop that never terminates.
  *
- *   npx tsx tools/simulate.ts [mapId] [maxDays] [seed] [fog]
+ *   npx tsx tools/simulate.ts [mapId] [maxDays] [seed] [fog] [coA] [coB]
  *
  * Pass "fog" as the fourth argument to run the match under fog of war, where
  * both commanders only ever see part of the board.
  */
 import {
+  activatePower,
   attack,
   buildUnit,
   capture,
@@ -41,12 +42,15 @@ const mapId = process.argv[2] ?? MAPS[0].id;
 const maxDays = Number(process.argv[3] ?? 40);
 const seed = Number(process.argv[4] ?? 12345);
 const fog = process.argv[5] === "fog";
+const coA = (process.argv[6] ?? "steady") as CoId;
+const coB = (process.argv[7] ?? "steady") as CoId;
 
 const entry = mapById(mapId);
 const state = createGame(entry.build(), entry.startUnits, {
   aiOpponent: true,
   random: mulberry32(seed),
   fog,
+  cos: [coA, coB],
 });
 // Drive both sides with the AI so a full match runs unattended.
 state.players[0].isAI = true;
@@ -59,6 +63,7 @@ function summarise(state: GameState, player: PlayerId): string {
 
 let steps = 0;
 let ambushes = 0;
+const powersUsed: [number, number] = [0, 0];
 let ordersThisTurn = 0;
 const stepBudget = 200_000;
 
@@ -74,6 +79,14 @@ while (state.winner === null && state.day <= maxDays && steps < stepBudget) {
     }
     ordersThisTurn = 0;
     endTurn(state);
+    continue;
+  }
+
+  if (step.kind === "power") {
+    if (!activatePower(state, state.turn, step.power)) {
+      throw new Error(`AI tried an illegal power: ${step.power}`);
+    }
+    powersUsed[state.turn]++;
     continue;
   }
 
@@ -121,7 +134,7 @@ while (state.winner === null && state.day <= maxDays && steps < stepBudget) {
   }
 }
 
-console.log("");
+console.log(`指挥官技能发动次数：红星 ${powersUsed[0]} 次，蓝月 ${powersUsed[1]} 次`);
 if (fog) console.log(`战争迷雾：开 —— 全场共 ${ambushes} 次遭遇伏击`);
 if (state.winner !== null) {
   const name = state.winner === 0 ? "红星军" : "蓝月军";

@@ -10,6 +10,15 @@ import {
   type ReachableNode,
 } from "./pathfinding";
 import { canSeeUnit, visibleUnits } from "./fog";
+import {
+  COS,
+  POINTS_PER_STAR,
+  chargeFor,
+  resolveMods,
+  starsOf,
+  type CoId,
+  type CoMods,
+} from "./co";
 import { NEUTRAL, key, type PlayerId, type Point, type UnitId } from "./types";
 
 export interface Unit {
@@ -33,7 +42,15 @@ export interface Player {
   id: PlayerId;
   funds: number;
   isAI: boolean;
+  /** Which commander is in the field. */
+  co: CoId;
+  /** Power meter, in points. See POINTS_PER_STAR. */
+  charge: number;
+  /** Power running right now; cleared when this player's turn ends. */
+  activePower: PowerKind | null;
 }
+
+export type PowerKind = "power" | "super";
 
 export interface GameState {
   map: GameMap;
@@ -62,16 +79,26 @@ export interface StartUnit {
 export function createGame(
   map: GameMap,
   startUnits: readonly StartUnit[],
-  options: { aiOpponent?: boolean; random?: () => number; fog?: boolean } = {},
+  options: {
+    aiOpponent?: boolean;
+    random?: () => number;
+    fog?: boolean;
+    cos?: [CoId, CoId];
+  } = {},
 ): GameState {
-  const { aiOpponent = true, random = Math.random, fog = false } = options;
+  const {
+    aiOpponent = true,
+    random = Math.random,
+    fog = false,
+    cos = ["steady", "steady"],
+  } = options;
 
   const state: GameState = {
     map,
     units: [],
     players: [
-      { id: 0, funds: 0, isAI: false },
-      { id: 1, funds: 0, isAI: aiOpponent },
+      { id: 0, funds: 0, isAI: false, co: cos[0], charge: 0, activePower: null },
+      { id: 1, funds: 0, isAI: aiOpponent, co: cos[1], charge: 0, activePower: null },
     ],
     turn: 0,
     day: 1,
@@ -134,6 +161,85 @@ export function propertiesOf(state: GameState, player: PlayerId): number {
 }
 
 /* ------------------------------------------------------------------ *
+ * Commanders
+ * ------------------------------------------------------------------ */
+
+/** Modifier sets in play for a player right now: always-on plus any power. */
+function activeMods(state: GameState, player: PlayerId): CoMods[] {
+  const seat = state.players[player];
+  const co = COS[seat.co];
+  const sets: CoMods[] = [co.d2d];
+  if (seat.activePower === "power") sets.push(co.power.mods);
+  if (seat.activePower === "super") sets.push(co.super.mods);
+  return sets;
+}
+
+/** The resolved commander bonuses affecting one unit type of one player. */
+export function modsFor(state: GameState, player: PlayerId, type: UnitId) {
+  return resolveMods(activeMods(state, player), type);
+}
+
+/** Whole stars currently on a player's meter. */
+export function powerStars(state: GameState, player: PlayerId): number {
+  return starsOf(state.players[player].charge);
+}
+
+/** Stars a player can hold at most; charging past the super is wasted. */
+export function maxStars(state: GameState, player: PlayerId): number {
+  return COS[state.players[player].co].superStars;
+}
+
+export function canActivate(state: GameState, player: PlayerId, kind: PowerKind): boolean {
+  const seat = state.players[player];
+  if (state.winner !== null) return false;
+  if (state.turn !== player) return false;
+  // One power per turn, and never on top of another.
+  if (seat.activePower !== null) return false;
+  const co = COS[seat.co];
+  const needed = kind === "super" ? co.superStars : co.powerStars;
+  return starsOf(seat.charge) >= needed;
+}
+
+/**
+ * Spend the meter and switch the power on for the rest of this player's turn.
+ * A super heals as it lands, which is the one modifier that changes the board
+ * immediately rather than colouring the maths.
+ */
+export function activatePower(state: GameState, player: PlayerId, kind: PowerKind): boolean {
+  if (!canActivate(state, player, kind)) return false;
+
+  const seat = state.players[player];
+  const co = COS[seat.co];
+  const needed = kind === "super" ? co.superStars : co.powerStars;
+  seat.charge -= needed * POINTS_PER_STAR;
+  seat.activePower = kind;
+
+  const heal = (kind === "super" ? co.super.mods.heal : co.power.mods.heal) ?? 0;
+  if (heal > 0) {
+    for (const unit of state.units) {
+      if (unit.owner === player) unit.hp = Math.min(100, unit.hp + heal);
+    }
+  }
+
+  state.log.push(`${co.name} 发动了${kind === "super" ? co.super.name : co.power.name}`);
+  return true;
+}
+
+/** Meter gained by both sides from one exchange of fire. */
+function addCharge(state: GameState, attacker: Unit, defender: Unit, hpLost: number): void {
+  if (hpLost <= 0) return;
+  state.players[attacker.owner].charge += chargeFor(defender.type, hpLost, "dealt");
+  state.players[defender.owner].charge += chargeFor(defender.type, hpLost, "taken");
+
+  // Charging past the super is wasted rather than banked, so a long quiet
+  // stretch cannot hand someone two powers back to back.
+  for (const seat of state.players) {
+    const cap = COS[seat.co].superStars * POINTS_PER_STAR;
+    if (seat.charge > cap) seat.charge = cap;
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Movement
  * ------------------------------------------------------------------ */
 
@@ -143,7 +249,12 @@ export function propertiesOf(state: GameState, player: PlayerId): number {
  * hidden enemy — that plan is what `resolveMovePath` later cuts short.
  */
 export function movementRange(state: GameState, unit: Unit): Map<number, ReachableNode> {
-  return reachable(state.map, unit, buildOccupancy(visibleUnits(state, unit.owner)));
+  return reachable(
+    state.map,
+    unit,
+    buildOccupancy(visibleUnits(state, unit.owner)),
+    modsFor(state, unit.owner, unit.type).move,
+  );
 }
 
 /** Tiles the unit may actually finish its move on. */
@@ -214,6 +325,8 @@ export function forecast(state: GameState, attacker: Unit, defender: Unit): Fore
     defenderHp: defender.hp,
     defenderTerrain: defenderTile.terrain,
     luck: 0,
+    attackBonus: modsFor(state, attacker.owner, attacker.type).attack,
+    defenceBonus: modsFor(state, defender.owner, defender.type).defence,
   });
   if (damage === null) return null;
 
@@ -231,6 +344,8 @@ export function forecast(state: GameState, attacker: Unit, defender: Unit): Fore
       defenderHp: attacker.hp,
       defenderTerrain: attackerTile.terrain,
       luck: 0,
+      attackBonus: modsFor(state, defender.owner, defender.type).attack,
+      defenceBonus: modsFor(state, attacker.owner, attacker.type).defence,
     });
   }
   return { damage, counter, destroys };
@@ -253,13 +368,16 @@ function canCounter(state: GameState, attacker: Unit, defender: Unit): boolean {
       defenderHp: attacker.hp,
       defenderTerrain: tileAt(state.map, attacker.x, attacker.y)!.terrain,
       luck: 0,
+      attackBonus: modsFor(state, defender.owner, defender.type).attack,
+      defenceBonus: modsFor(state, attacker.owner, attacker.type).defence,
     }) !== null
   );
 }
 
 export function canAttack(state: GameState, attacker: Unit, defender: Unit): boolean {
   if (attacker.owner === defender.owner) return false;
-  if (!inRange(attacker.type, attacker, defender)) return false;
+  if (!inRange(attacker.type, attacker, defender, modsFor(state, attacker.owner, attacker.type).range))
+    return false;
   // You cannot shoot what you have not found.
   if (!canSeeUnit(state, attacker.owner, defender)) return false;
   return forecast(state, attacker, defender) !== null;
@@ -290,9 +408,12 @@ export function attack(state: GameState, attacker: Unit, defender: Unit): Attack
       defenderHp: defender.hp,
       defenderTerrain: defenderTile.terrain,
       luck,
+      attackBonus: modsFor(state, attacker.owner, attacker.type).attack,
+      defenceBonus: modsFor(state, defender.owner, defender.type).defence,
     }) ?? 0;
 
   attacker.ammo = Math.max(0, attacker.ammo - ammoCost(attacker.type, defender.type, attacker.ammo));
+  addCharge(state, attacker, defender, Math.min(damage, defender.hp));
   defender.hp -= damage;
 
   const result: AttackResult = {
@@ -322,12 +443,15 @@ export function attack(state: GameState, attacker: Unit, defender: Unit): Attack
         defenderHp: attacker.hp,
         defenderTerrain: tileAt(state.map, attacker.x, attacker.y)!.terrain,
         luck: counterLuck,
+        attackBonus: modsFor(state, defender.owner, defender.type).attack,
+        defenceBonus: modsFor(state, attacker.owner, attacker.type).defence,
       }) ?? 0;
 
     defender.ammo = Math.max(
       0,
       defender.ammo - ammoCost(defender.type, attacker.type, defender.ammo),
     );
+    addCharge(state, defender, attacker, Math.min(counter, attacker.hp));
     attacker.hp -= counter;
     result.counter = counter;
 
@@ -511,6 +635,8 @@ export function endTurn(state: GameState): void {
   for (const unit of state.units) {
     if (unit.owner === state.turn) unit.done = true;
   }
+  // A power lasts exactly one turn — the turn it was spent on.
+  state.players[state.turn].activePower = null;
 
   state.turn = state.turn === 0 ? 1 : 0;
   if (state.turn === 0) state.day++;
@@ -574,7 +700,7 @@ export function actionsAt(state: GameState, unit: Unit, at: Point, moved: boolea
         (other) =>
           other.owner !== unit.owner &&
           other.id !== unit.id &&
-          inRange(unit.type, at, other) &&
+          inRange(unit.type, at, other, modsFor(state, unit.owner, unit.type).range) &&
           forecast(state, probe, other) !== null,
       );
 
